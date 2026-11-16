@@ -16,7 +16,7 @@ Critères écrits avant le code ; ils ne changent pas en cours de lot. Fini = to
 
 Hors critères (dépend de tes secrets GitHub) : migration du schéma vers `sonikc-dev` et test de fumée réel contre Supabase. Le workflow sera prêt ; il tournera dès que les 3 secrets existent.
 
-## Résultat (itération 1)
+## Résultat (itération 1) — 9/9 critères au vert, lot gelé
 
 | # | État | Preuve |
 | --- | --- | --- |
@@ -27,8 +27,8 @@ Hors critères (dépend de tes secrets GitHub) : migration du schéma vers `soni
 | 5 | ✅ | ZIP de 120 Mo déballé avec un pic mémoire < 60 Mo ; ZIP corrompu refusé ; plafonds 200 fichiers / 600 Mo |
 | 6 | ✅ | `tests/unit/keys.test.ts` (24 tonalités en écriture usuelle, dièses/bémols forcés, saisie libre « si bémol majeur ») ; E2E : `Bb maj` par défaut → `A# maj` → `Bb maj`. Le bouton passe Auto → ♯ → ♭ |
 | 7 | ✅ | `npm run lighthouse`, mobile 375 px : accessibilité **100** sur connexion, bibliothèque et page morceau (perf 99-100, bonnes pratiques 96-100, SEO 100) |
-| 8 | ⏳ | Workflow `.github/workflows/ci.yml` validé par actionlint ; preuve = première exécution sur la PR |
-| 9 | ⏳ | `worker/Dockerfile` (Node 22 + ffmpeg) ; construit et vérifié (`ffmpeg -version`) dans la CI — pas de Docker dans l'environnement de travail |
+| 8 | ✅ | [Exécution GitHub Actions](https://github.com/Don-Mama-Capital/Sonikc/actions/runs/43846331723) sur la PR : audit 0 faille, 74 tests, build, 9 parcours dans Chrome |
+| 9 | ✅ | `worker/Dockerfile` (Node 22 + ffmpeg 5.1) construit dans la [même exécution](https://github.com/Don-Mama-Capital/Sonikc/actions/runs/43846331723), `ffmpeg` et `ffprobe` vérifiés dans l'image |
 
 Ajouté en plus, sans nouvelle feature : migration `0002` qui ferme l'accès des rôles publics de Supabase (`anon`, `authenticated`) et active la RLS sur toutes les tables, prouvée par `tests/unit/supabase-hardening.test.ts` (base qui imite les droits par défaut de Supabase).
 
