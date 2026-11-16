@@ -23,7 +23,7 @@ En local, les emails (codes de connexion) sont écrits dans `.data/mail/` au lie
 ## Tests
 
 ```bash
-npm test                          # 49 tests : accès, connexion, envoi, analyse audio, bibliothèque
+npm test                          # 55 tests : accès, connexion, envoi, analyse audio, bibliothèque
 npm run build && npm run test:e2e # 9 parcours dans Chrome
 ```
 

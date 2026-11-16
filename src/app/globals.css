@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0b0b0f;
+  --color-panel: #15151c;
+  --color-panel-2: #1d1d26;
+  --color-line: #2a2a36;
+  --color-mute: #9a9aab;
+  --color-text: #f2f2f5;
+  --color-accent: #ff5a36;
+  --color-accent-2: #ff8a6b;
+  --color-ok: #3ddc97;
+  --color-warn: #ffb020;
+  --color-bad: #ff4d6d;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html { color-scheme: dark; }
+body { @apply bg-ink text-text antialiased; }
+
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50;
+}
+@utility btn-primary {
+  @apply btn bg-accent text-ink hover:bg-accent-2;
+}
+@utility btn-ghost {
+  @apply btn border border-line text-text hover:bg-panel-2;
+}
+@utility input {
+  @apply w-full rounded-xl border border-line bg-panel px-3.5 py-2.5 text-sm text-text outline-none placeholder:text-mute focus:border-accent;
+}
+@utility label {
+  @apply mb-1.5 block text-xs font-medium uppercase tracking-wide text-mute;
+}
+@utility card {
+  @apply rounded-2xl border border-line bg-panel;
+}
