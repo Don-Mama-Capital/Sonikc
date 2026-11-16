@@ -3,7 +3,11 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
-export function AppHeader({ handle, notation }: { handle: string; notation: 'sharps' | 'flats' }) {
+const NEXT = { auto: 'sharps', sharps: 'flats', flats: 'auto' } as const;
+const LABEL = { auto: 'Auto', sharps: '♯', flats: '♭' } as const;
+const TITLE = { auto: 'écriture usuelle', sharps: 'toujours des dièses', flats: 'toujours des bémols' } as const;
+
+export function AppHeader({ handle, notation }: { handle: string; notation: 'auto' | 'sharps' | 'flats' }) {
   const router = useRouter();
   return (
     <header className="sticky top-0 z-30 border-b border-line bg-ink/90 backdrop-blur">
@@ -14,12 +18,12 @@ export function AppHeader({ handle, notation }: { handle: string; notation: 'sha
           <Link href="/app/trash" className="hover:text-text">Corbeille</Link>
         </nav>
         <button className="rounded-lg border border-line px-2 py-1 font-mono text-xs text-mute hover:text-text" data-testid="notation"
-          title="Notation des tonalités : dièses ou bémols"
+          title={`Tonalités : ${TITLE[notation]} (cliquer pour changer)`} aria-label={`Notation des tonalités : ${TITLE[notation]}`}
           onClick={async () => {
-            await fetch('/api/profile', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ keyNotation: notation === 'sharps' ? 'flats' : 'sharps' }) });
+            await fetch('/api/profile', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ keyNotation: NEXT[notation] }) });
             router.refresh();
           }}>
-          {notation === 'sharps' ? '♯' : '♭'}
+          {LABEL[notation]}
         </button>
         <span className="hidden text-sm text-mute sm:inline" data-testid="me">@{handle}</span>
         <button className="shrink-0 text-sm text-mute underline hover:text-text" data-testid="logout"

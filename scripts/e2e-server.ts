@@ -20,6 +20,7 @@ Object.assign(process.env, {
   APP_URL: 'http://localhost:3100',
   STORAGE_DIR: path.join(root, 'storage'),
   MAIL_DIR: path.join(root, 'mail'),
+  ALLOW_LOCAL_DRIVERS: '1',
 });
 
 const next = spawn('npx', ['next', 'start', '-p', '3100'], { stdio: 'inherit', env: { ...process.env, NODE_ENV: 'production' } });

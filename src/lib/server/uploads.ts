@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { withUser } from './db';
 import { NotFound, Invalid } from './library';
 import { cleanTitle } from '../audio/title';
-import { exists, size, uploadToken } from './storage';
+import { exists, size, store } from './storage';
 
 export const AUDIO_EXTS = ['wav', 'wave', 'mp3', 'aif', 'aiff', 'flac'] as const;
 export const MAX_AUDIO_BYTES = 500 * 1024 ** 2;
@@ -48,7 +48,7 @@ export async function startUpload(userId: string, input: z.input<typeof startSch
         values (${userId}, ${p.folderId ?? null}, ${p.filename}, 'pending') returning id`;
       const key = `u/${userId}/imports/${row.id}/source.zip`;
       await tx`update imports set original_key = ${key} where id = ${row.id}`;
-      return ticket('import', row.id, key, max);
+      return await ticket('import', row.id, key, max);
     }
 
     let trackId = p.trackId ?? null;
@@ -76,14 +76,12 @@ export async function startUpload(userId: string, input: z.input<typeof startSch
       await tx`insert into project_tracks (project_id, track_id, owner_id, position)
                values (${p.projectId}, ${trackId}, ${userId}, (select coalesce(max(position), -1) + 1 from project_tracks where project_id = ${p.projectId}))`;
     }
-    return { ...ticket('version', v.id, key, max), trackId };
+    return { ...(await ticket('version', v.id, key, max)), trackId };
   });
 }
 
-function ticket(kind: 'version' | 'import', id: string, key: string, max: number): UploadTicket {
-  const t = uploadToken(key, max);
-  const q = new URLSearchParams({ key, exp: String(t.exp), max: String(t.max), sig: t.sig });
-  return { kind, id, uploadUrl: `/api/uploads/data?${q}`, completeUrl: `/api/uploads/${kind}/${id}/complete` };
+async function ticket(kind: 'version' | 'import', id: string, key: string, max: number): Promise<UploadTicket> {
+  return { kind, id, uploadUrl: await store().uploadTarget(key, max), completeUrl: `/api/uploads/${kind}/${id}/complete` };
 }
 
 /** Le fichier est arrivé : on vérifie qu'il est là et on lance le traitement. */

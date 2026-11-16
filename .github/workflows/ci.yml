@@ -1,0 +1,52 @@
+name: Tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CHROME_PATH: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: ffmpeg
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npx tsc --noEmit
+      - name: Beats de référence
+        run: npm run fixtures
+      - name: Tests unitaires et d'intégration
+        run: npm test
+      - name: Build
+        run: npm run build
+        env:
+          APP_SECRET: ci-only-secret-not-used-anywhere-else-000000
+          DATABASE_URL: postgres://unused@127.0.0.1:1/unused
+          ALLOW_LOCAL_DRIVERS: '1'
+      - name: Recette dans Chrome
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: recette
+          path: test-results/
+          retention-days: 7
+  worker-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image du worker (ffmpeg compris)
+        run: docker build -f worker/Dockerfile -t sonikc-worker:ci .
+      - name: ffmpeg présent dans l'image
+        run: docker run --rm --entrypoint sh sonikc-worker:ci -c "ffmpeg -version | head -1 && ffprobe -version | head -1"

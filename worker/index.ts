@@ -1,5 +1,6 @@
 import { claimJob, failJob, finishJob } from '../src/lib/server/jobs';
 import { onJobGiveUp, PermanentError, runJob } from '../src/lib/server/processing';
+import { housekeeping } from '../src/lib/server/housekeeping';
 
 /** Traite les tâches en attente jusqu'à ce que la file soit vide. Rend le nombre de tâches traitées. */
 export async function drain(log: (m: string) => void = () => {}) {
@@ -29,7 +30,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   let stopping = false;
   process.on('SIGINT', () => { stopping = true; });
   process.on('SIGTERM', () => { stopping = true; });
+  let lastHousekeeping = 0;
   while (!stopping) {
+    if (Date.now() - lastHousekeeping > 3600_000) {
+      lastHousekeeping = Date.now();
+      await housekeeping().then((r) => console.log('ménage', r), (e) => console.error('ménage en échec', e));
+    }
     const n = await drain((m) => console.log(m));
     if (n === 0) await new Promise((r) => setTimeout(r, 1000));
   }

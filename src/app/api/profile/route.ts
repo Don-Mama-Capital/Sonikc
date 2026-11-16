@@ -22,7 +22,7 @@ export async function PATCH(req: Request) {
   const user = await currentUser();
   if (!user?.handle) return fail(401, 'Connexion requise.');
   const body = await req.json().catch(() => ({}));
-  if (body.keyNotation !== 'sharps' && body.keyNotation !== 'flats') return fail(400, 'Notation invalide.');
+  if (!['auto', 'sharps', 'flats'].includes(body.keyNotation)) return fail(400, 'Notation invalide.');
   const { withUser } = await import('@/lib/server/db');
   await withUser(user.id, (tx) => tx`update profiles set key_notation = ${body.keyNotation} where user_id = ${user.id}`);
   return json({ ok: true });

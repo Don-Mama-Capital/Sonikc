@@ -1,0 +1,24 @@
+name: Supabase dev
+# Lancement à la main (onglet Actions) ou à chaque fusion d'une migration sur main.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['db/migrations/**']
+jobs:
+  setup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Migrations, verrous d'accès, stockage privé
+        run: npx tsx scripts/supabase-setup.ts
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}

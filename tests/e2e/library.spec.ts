@@ -18,14 +18,16 @@ test('envoyer un beat : analyse, BPM et tonalité, puis correction à la main', 
   await expect(page.getByTestId('track-row').first()).toContainText('#dark');
 });
 
-test('notation des tonalités : dièses ou bémols, au choix', async ({ page }) => {
+test('notation des tonalités : écriture usuelle par défaut, dièses ou bémols au choix', async ({ page }) => {
   await signUp(page);
   await page.getByTestId('file-input').setInputFiles(fixture('ref08_85_Bbmaj.flac'));
   const row = page.getByTestId('track-row').first();
-  await expect(row).toContainText('85 BPM · A# maj', { timeout: 30_000 });
+  await expect(row).toContainText('85 BPM · Bb maj', { timeout: 30_000 });
   await page.getByTestId('notation').click();
-  await expect(row).toContainText('85 BPM · Bb maj');
+  await expect(row).toContainText('85 BPM · A# maj');
   await page.reload();
+  await expect(page.getByTestId('track-row').first()).toContainText('A# maj');
+  await page.getByTestId('notation').click();
   await expect(page.getByTestId('track-row').first()).toContainText('Bb maj');
 });
 

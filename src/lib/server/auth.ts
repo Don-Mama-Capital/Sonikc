@@ -3,6 +3,7 @@ import { asService, withUser } from './db';
 import { hashCode, randomCode, randomToken, safeEqualHex, sha256 } from './crypto';
 import { sendMail } from './mail';
 import { handleProblem, normalizeHandle } from '../handle';
+import type { Notation } from '../audio/keys';
 
 export const CODE_TTL_MIN = 10;
 export const MAX_ATTEMPTS = 5;
@@ -92,12 +93,12 @@ export async function verifyCode(rawEmail: string, rawCode: string) {
   });
 }
 
-export type SessionUser = { id: string; email: string; handle: string | null; displayName: string | null; keyNotation: 'sharps' | 'flats' };
+export type SessionUser = { id: string; email: string; handle: string | null; displayName: string | null; keyNotation: Notation };
 
 export async function userFromToken(token: string | undefined | null): Promise<SessionUser | null> {
   if (!token || token.length > 100) return null;
   return asService(async (tx) => {
-    const [row] = await tx<{ id: string; email: string; handle: string | null; display_name: string | null; key_notation: 'sharps' | 'flats' | null; session_id: string; last_seen_at: Date }[]>`
+    const [row] = await tx<{ id: string; email: string; handle: string | null; display_name: string | null; key_notation: Notation | null; session_id: string; last_seen_at: Date }[]>`
       select u.id, u.email, p.handle, p.display_name, p.key_notation, s.id as session_id, s.last_seen_at
       from sessions s join users u on u.id = s.user_id left join profiles p on p.user_id = u.id
       where s.token_hash = ${sha256(token)} and s.expires_at > now()`;
@@ -105,7 +106,7 @@ export async function userFromToken(token: string | undefined | null): Promise<S
     if (Date.now() - row.last_seen_at.getTime() > 3600_000) {
       await tx`update sessions set last_seen_at = now() where id = ${row.session_id}`;
     }
-    return { id: row.id, email: row.email, handle: row.handle, displayName: row.display_name, keyNotation: row.key_notation ?? 'sharps' };
+    return { id: row.id, email: row.email, handle: row.handle, displayName: row.display_name, keyNotation: row.key_notation ?? 'auto' };
   });
 }
 

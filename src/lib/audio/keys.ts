@@ -1,14 +1,18 @@
 // Tonalités : stockage canonique (classe de hauteur 0–11 + mode), affichage selon la notation choisie.
 
 export type Mode = 'major' | 'minor';
-export type Notation = 'sharps' | 'flats';
+export type Notation = 'auto' | 'sharps' | 'flats';
 
 const SHARPS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const FLATS = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+// Écriture usuelle (celle des partitions et des logiciels de MAO).
+const USUAL_MAJOR = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+const USUAL_MINOR = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'G#', 'A', 'Bb', 'B'];
 
-export function formatKey(pc: number | null | undefined, mode: Mode | null | undefined, notation: Notation = 'sharps') {
+export function formatKey(pc: number | null | undefined, mode: Mode | null | undefined, notation: Notation = 'auto') {
   if (pc == null || mode == null) return null;
-  const name = (notation === 'flats' ? FLATS : SHARPS)[((pc % 12) + 12) % 12];
+  const table = notation === 'flats' ? FLATS : notation === 'sharps' ? SHARPS : mode === 'major' ? USUAL_MAJOR : USUAL_MINOR;
+  const name = table[((pc % 12) + 12) % 12];
   return `${name} ${mode === 'major' ? 'maj' : 'min'}`;
 }
 
@@ -17,7 +21,7 @@ export function parseKey(input: string): { pc: number; mode: Mode } | null {
   const s = input.trim().replace(/♯/g, '#').replace(/♭/g, 'b');
   if (!s) return null;
   const fr: Record<string, string> = { do: 'C', re: 'D', ré: 'D', mi: 'E', fa: 'F', sol: 'G', la: 'A', si: 'B' };
-  const m = /^(do|ré|re|mi|fa|sol|la|si|[A-Ga-g])\s*(#|b|dièse|diese|bémol|bemol)?\s*(.*)$/i.exec(s);
+  const m = /^(do|ré|re|mi|fa|sol|la|si|[A-Ga-g])\s*(dièse|diese|bémol|bemol|#|b)?\s*(.*)$/i.exec(s);
   if (!m) return null;
   const letter = (fr[m[1].toLowerCase()] ?? m[1]).toUpperCase();
   let pc = SHARPS.indexOf(letter);
