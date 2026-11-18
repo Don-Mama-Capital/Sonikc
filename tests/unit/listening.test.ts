@@ -196,7 +196,7 @@ describe('Lot 2.3 — stats et notifications', () => {
     await listenStart(s.ctx(guest.id), s.trackId, v);
     const n = await notifications(s.owner.id);
     expect(n.unread).toBe(1);
-    expect(n.items[0]).toMatchObject({ kind: 'listen', actor: guest.handle, source: 'Instagram', trackTitle: 'Nuit' });
+    expect(n.items[0]).toMatchObject({ kind: 'listen', actor: guest.handle, source: 'Instagram', title: 'Nuit', count: 1 });
     expect((await notifications(guest.id)).items).toHaveLength(0);
     await markNotificationsRead(s.owner.id);
     expect((await notifications(s.owner.id)).unread).toBe(0);

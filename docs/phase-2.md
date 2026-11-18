@@ -60,6 +60,23 @@
 | 3 | Notification dans l'app en moins de 10 s après le début d'une écoute | Parcours Chrome (deux navigateurs) |
 | 4 | Liste des écoutes récentes : qui (nom du compte ou « anonyme »), source, date, durée | Test + capture |
 
+## Lot 2.4 — « Reçus » : enregistrer un partage (ajouté le 18/11 sur ta demande)
+
+Choix retenus (version la plus efficace) :
+- On enregistre **le partage entier** (le projet ou le morceau du lien), pas une copie : « Reçus » montre toujours le contenu actuel du producteur (un morceau ajouté au projet apparaît, un morceau retiré disparaît). Aucun fichier n'est dupliqué.
+- Le producteur **garde le contrôle** : s'il révoque le lien, repasse en privé, retire l'invitation ou change le mot de passe, le partage devient indisponible dans « Reçus ».
+- « Reçus » est ouvert à **tout compte connecté**, même sans profil de producteur (un A&R, un artiste invité).
+- Précision 3 optimisée en même temps : les notifications regroupées affichent un **compteur** (« X et 2 autres ont écouté ») au lieu d'être simplement ignorées.
+
+| # | Critère bloquant | Preuve |
+| --- | --- | --- |
+| 1 | Un auditeur connecté enregistre un partage en un clic et le retrouve dans « Reçus », écoutable sans le lien | Test + parcours Chrome |
+| 2 | Lien révoqué, niveau privé, invitation retirée ou mot de passe changé → indisponible dans « Reçus » (audio refusé), sans copie de fichier | Test |
+| 3 | Les écoutes depuis « Reçus » sont suivies comme les autres, avec la source du lien | Test |
+| 4 | Le producteur voit les enregistrements par lien et reçoit une notification (une seule par auditeur et par partage) | Test |
+| 5 | Anonyme : invitation à se connecter ; propriétaire : pas de bouton ; un compte ne voit que ses propres enregistrements (RLS) | Test |
+| 6 | Notifications regroupées avec compteur ; « Reçus » utilisable à 375 px sans défilement horizontal | Test + parcours Chrome |
+
 ## Résultats
 
 ### Lot 2.0 — itération 1 : 4/4 au vert, lot gelé
@@ -130,3 +147,14 @@ Itération 2 des lots 2.0 à 2.2 : les 7 remarques sont corrigées, chacune couv
 7. **Basse — rattachement Google d'une adresse hors Gmail** (domaine racheté) : rattachement automatique seulement pour Gmail ou un domaine Google Workspace ; sinon connexion par code d'abord. Test.
 
 Après correction : 112 tests et 14 parcours dans Chrome au vert.
+
+### Lot 2.4 — itération 1 : 6/6 au vert
+
+| # | Preuve |
+| --- | --- |
+| 1 | `tests/unit/saves.test.ts` : enregistré → visible et écoutable dans Reçus ; un morceau ajouté ensuite au projet apparaît ; retrait. `tests/e2e/received.spec.ts` : connexion depuis la page d'écoute, enregistrement, lecture depuis Reçus |
+| 2 | Test : privé, mot de passe changé, lien révoqué, invitation retirée → indisponible, audio refusé ; la table ne contient qu'une référence au lien (aucune copie). Chrome : projet repassé en privé → « n'est plus disponible » |
+| 3 | Test : écoute depuis Reçus suivie avec la source « Instagram » et l'auditeur |
+| 4 | Test : colonne « Enregistrés » par lien ; une seule notification même après retrait puis nouvel enregistrement. Chrome : la cloche affiche « a enregistré » |
+| 5 | Test : anonyme refusé, propriétaire ignoré, enregistrements d'un autre compte invisibles et impossibles à retirer, lien sans accès refusé |
+| 6 | Test : 3 écoutes → une notification avec compteur 3. Chrome à 375 px : aucun défilement horizontal (capture `test-results/recus-mobile.png`) |

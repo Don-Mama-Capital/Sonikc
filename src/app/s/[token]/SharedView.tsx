@@ -10,11 +10,12 @@ type View = NonNullable<Awaited<ReturnType<typeof loadShared>>>;
 
 export function SharedView({ token, view }: { token: string; view: View }) {
   const player = usePlayer();
-  const [fav, setFav] = useState<{ loggedIn: boolean; ids: string[] }>({ loggedIn: false, ids: [] });
+  const [fav, setFav] = useState<{ loggedIn: boolean; ids: string[]; loaded: boolean }>({ loggedIn: false, ids: [], loaded: false });
+  const [saved, setSaved] = useState(false);
   useEffect(() => {
     if (view.isOwner) return;
     fetch(`/api/s/${token}/view`, { method: 'POST' }).then((r) => (r.ok ? r.json() : null))
-      .then((d) => d && setFav({ loggedIn: d.loggedIn, ids: d.favorites })).catch(() => {});
+      .then((d) => { if (d) { setFav({ loggedIn: d.loggedIn, ids: d.favorites, loaded: true }); setSaved(Boolean(d.saved)); } }).catch(() => {});
   }, [token, view.isOwner]);
   const toggleFav = async (trackId: string) => {
     const on = !fav.ids.includes(trackId);
@@ -37,7 +38,20 @@ export function SharedView({ token, view }: { token: string; view: View }) {
         <h1 className="text-2xl font-bold" data-testid="shared-title">{view.title}</h1>
         <p className="text-sm text-mute">par <span className="text-text">{view.ownerName || 'un producteur'}</span> · {visible.length} morceau{visible.length > 1 ? 'x' : ''}</p>
       </header>
-      {queue.length > 1 && <button className="btn-primary" onClick={() => player.playList(queue)}>▶ Tout écouter</button>}
+      <div className="flex flex-wrap gap-2">
+        {queue.length > 1 && <button className="btn-primary" onClick={() => player.playList(queue)}>▶ Tout écouter</button>}
+        {!view.isOwner && fav.loaded && (fav.loggedIn ? (
+          <button className="btn-ghost" data-testid="save" aria-pressed={saved} onClick={async () => {
+            const on = !saved; setSaved(on);
+            await fetch(`/api/s/${token}/save`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on }) }).catch(() => {});
+          }}>
+            {saved ? '✓ Enregistré dans mes reçus' : 'Enregistrer dans mes reçus'}
+          </button>
+        ) : (
+          <a className="btn-ghost" href={`/login?next=${encodeURIComponent(`/s/${token}`)}`}>Se connecter pour enregistrer</a>
+        ))}
+        {!view.isOwner && fav.loggedIn && <a className="self-center text-sm text-mute underline hover:text-text" href="/recus">Mes reçus</a>}
+      </div>
       <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-panel" data-testid="shared-tracks">
         {visible.map((t, i) => {
           const isCurrent = player.current?.id === t.id;

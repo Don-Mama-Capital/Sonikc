@@ -73,13 +73,14 @@ export async function trackStats(userId: string, trackId: string) {
 export async function linkFunnel(userId: string, kind: 'project' | 'track', id: string) {
   uuid.parse(id);
   return withUser(userId, async (tx) => {
-    const rows = await tx<{ linkId: string; label: string; revoked: boolean; opened: number; played: number; over30: number; complete: number; downloaded: number }[]>`
+    const rows = await tx<{ linkId: string; label: string; revoked: boolean; opened: number; played: number; over30: number; complete: number; downloaded: number; saved: number }[]>`
       select l.id as "linkId", l.label, l.revoked_at is not null as revoked,
         (select count(distinct v.visitor)::int from link_views v where v.link_id = l.id) as opened,
         (select count(distinct s.visitor)::int from listen_sessions s where s.link_id = l.id) as played,
         (select count(distinct s.visitor)::int from listen_sessions s where s.link_id = l.id and s.listened_ms >= 30000) as over30,
         (select count(distinct s.visitor)::int from listen_sessions s where s.link_id = l.id and s.duration_ms > 0 and s.listened_ms >= s.duration_ms * ${COMPLETE}::numeric) as complete,
-        (select count(distinct i.visitor)::int from interactions i where i.link_id = l.id and i.kind = 'download') as downloaded
+        (select count(distinct i.visitor)::int from interactions i where i.link_id = l.id and i.kind = 'download') as downloaded,
+        (select count(*)::int from saves sv where sv.link_id = l.id) as saved
       from share_links l
       where ${kind === 'project' ? tx`l.project_id = ${id}` : tx`l.track_id = ${id}`}
       order by l.created_at desc`;
@@ -90,10 +91,10 @@ export async function linkFunnel(userId: string, kind: 'project' | 'track', id: 
 export async function notifications(userId: string, limit = 20) {
   return withUser(userId, async (tx) => {
     const [{ unread }] = await tx<{ unread: number }[]>`select count(*)::int as unread from notifications where read_at is null`;
-    const items = await tx<{ id: number; kind: string; trackId: string | null; trackTitle: string | null; actor: string | null; source: string | null; createdAt: Date; read: boolean }[]>`
-      select n.id::int, n.kind, n.track_id as "trackId", t.title as "trackTitle", n.actor, n.source,
-             n.created_at as "createdAt", n.read_at is not null as read
-      from notifications n left join tracks t on t.id = n.track_id
+    const items = await tx<{ id: number; kind: string; trackId: string | null; projectId: string | null; title: string | null; actor: string | null; source: string | null; count: number; createdAt: Date; read: boolean }[]>`
+      select n.id::int, n.kind, n.track_id as "trackId", n.project_id as "projectId", coalesce(t.title, p.title) as title,
+             n.actor, n.source, n.count, n.created_at as "createdAt", n.read_at is not null as read
+      from notifications n left join tracks t on t.id = n.track_id left join projects p on p.id = n.project_id
       order by n.created_at desc limit ${limit}`;
     return { unread, items: items.map((i) => ({ ...i, createdAt: i.createdAt.toISOString() })) };
   });

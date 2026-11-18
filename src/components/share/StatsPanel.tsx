@@ -48,15 +48,15 @@ export function StatsPanel({ kind, id }: { kind: 'project' | 'track'; id: string
       {d.funnel.length > 0 && (
         <div className="card overflow-x-auto p-3">
           <h3 className="mb-2 text-sm font-semibold">Par lien</h3>
-          <table className="w-full min-w-[520px] text-sm" data-testid="funnel">
+          <table className="w-full min-w-[600px] text-sm" data-testid="funnel">
             <thead className="text-left text-xs text-mute">
-              <tr><th className="py-1 font-medium">Lien</th><th className="font-medium">Ouvertures</th><th className="font-medium">Lectures</th><th className="font-medium">&gt; 30 s</th><th className="font-medium">Complètes</th><th className="font-medium">Téléch.</th></tr>
+              <tr><th className="py-1 font-medium">Lien</th><th className="font-medium">Ouvertures</th><th className="font-medium">Lectures</th><th className="font-medium">&gt; 30 s</th><th className="font-medium">Complètes</th><th className="font-medium">Téléch.</th><th className="font-medium">Enregistrés</th></tr>
             </thead>
             <tbody>
               {d.funnel.map((f) => (
                 <tr key={f.linkId} className="border-t border-line" data-testid="funnel-row" data-label={f.label}>
                   <td className="py-1.5">{f.label}{f.revoked && <span className="ml-1 text-xs text-mute">(révoqué)</span>}</td>
-                  <td>{f.opened}</td><td>{f.played}</td><td>{f.over30}</td><td>{f.complete}</td><td>{f.downloaded}</td>
+                  <td>{f.opened}</td><td>{f.played}</td><td>{f.over30}</td><td>{f.complete}</td><td>{f.downloaded}</td><td>{f.saved}</td>
                 </tr>
               ))}
             </tbody>

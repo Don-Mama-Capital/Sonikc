@@ -5,7 +5,10 @@ import { useEffect, useRef, useState } from 'react';
 import type { notifications } from '@/lib/server/listening';
 
 type Data = Awaited<ReturnType<typeof notifications>>;
-const VERB: Record<string, string> = { listen: 'écoute', download: 'a téléchargé', favorite: 'a mis en favori' };
+const VERB: Record<string, [string, string]> = {
+  listen: ['écoute', 'ont écouté'], download: ['a téléchargé', 'ont téléchargé'],
+  favorite: ['a mis en favori', 'ont mis en favori'], save: ['a enregistré', 'ont enregistré'],
+};
 
 /** Cloche des notifications : interrogée toutes les 4 s, donc une écoute apparaît en moins de 10 s. */
 export function NotificationBell() {
@@ -40,9 +43,11 @@ export function NotificationBell() {
       {open && (
         <div className="absolute right-0 z-30 mt-2 w-80 max-w-[calc(100vw-2rem)] rounded-2xl border border-line bg-panel p-2 shadow-xl" data-testid="notifications">
           {d?.items.length ? d.items.map((n) => (
-            <Link key={n.id} href={n.trackId ? `/app/tracks/${n.trackId}` : '/app'} onClick={() => setOpen(false)}
+            <Link key={n.id} href={n.trackId ? `/app/tracks/${n.trackId}` : n.projectId ? `/app/projects/${n.projectId}` : '/app'} onClick={() => setOpen(false)}
               className={`block rounded-xl px-3 py-2 text-sm hover:bg-panel-2 ${n.read ? 'text-mute' : ''}`} data-testid="notification">
-              <span className="font-medium text-text">{n.actor ?? 'Quelqu’un'}</span> {VERB[n.kind] ?? n.kind} <span className="text-text">« {n.trackTitle ?? 'un morceau'} »</span>
+              <span className="font-medium text-text">{n.actor ?? 'Quelqu’un'}</span>
+              {n.count > 1 ? ` et ${n.count - 1} autre${n.count > 2 ? 's' : ''} ${VERB[n.kind]?.[1] ?? n.kind}` : ` ${VERB[n.kind]?.[0] ?? n.kind}`}{' '}
+              <span className="text-text">« {n.title ?? 'un partage'} »</span>
               <span className="block text-xs text-mute">{n.source ? `via ${n.source} · ` : ''}{new Date(n.createdAt).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
             </Link>
           )) : <p className="px-3 py-2 text-sm text-mute">Rien pour l’instant. Tu seras prévenu dès qu’on écoute un de tes liens.</p>}
