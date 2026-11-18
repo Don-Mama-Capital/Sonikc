@@ -9,7 +9,7 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       CHROME_PATH: /usr/bin/google-chrome
     steps:
@@ -18,8 +18,12 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # Binaire statique téléchargé depuis GitHub (mis en cache) : apt-get a déjà mis 29 min à cause d'un miroir lent.
       - name: ffmpeg
-        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+        uses: FedericoCarboni/setup-ffmpeg@v3
+        with:
+          ffmpeg-version: release
+      - run: ffmpeg -version | head -1 && ffprobe -version | head -1
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
       - run: npx tsc --noEmit
