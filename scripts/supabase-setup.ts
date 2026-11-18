@@ -75,7 +75,8 @@ if (got.status === 200) {
   if (b.public) throw new Error(`Le compartiment « ${BUCKET} » est public : passe-le en privé dans Supabase.`);
 } else {
   const res = await fetch(`${SUPABASE_URL}/storage/v1/bucket`, {
-    method: 'POST', headers, body: JSON.stringify({ id: BUCKET, name: BUCKET, public: false, file_size_limit: 600 * 1024 * 1024 }),
+    method: 'POST', headers, // Pas de limite propre au compartiment : il suit la limite globale du projet (50 Mo par fichier en offre gratuite).
+    body: JSON.stringify({ id: BUCKET, name: BUCKET, public: false }),
   });
   if (!res.ok) throw new Error(`Création du compartiment : HTTP ${res.status} ${await res.text()}`);
 }
