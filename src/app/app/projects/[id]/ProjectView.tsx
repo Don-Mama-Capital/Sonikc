@@ -45,6 +45,7 @@ export function ProjectView({ data, notation }: { data: Data; notation: Notation
         <h1 className="flex-1 text-2xl font-bold" data-testid="project-title">{project.pinned && <span className="mr-1 text-accent">●</span>}{project.title}</h1>
         <button className="btn-primary" data-testid="play-all" disabled={!queue.length} onClick={() => player.playList(queue)}>▶ Tout écouter</button>
         <button className="btn-ghost" data-testid="share" onClick={() => setSharing((v) => !v)}>Partager</button>
+        <a className="btn-ghost" href={`/app/campaigns/new?kind=project&id=${project.id}`} data-testid="send-email">Envoyer par email</a>
         <button className="btn-ghost" onClick={() => setRenaming(true)}>Renommer</button>
         <button className="btn-ghost" onClick={() => act(() => api(`/api/projects/${project.id}`, { method: 'PATCH', body: { pinned: !project.pinned } }))}>
           {project.pinned ? 'Désépingler' : 'Épingler'}

@@ -1,3 +1,4 @@
+import { runCampaignSend, runFollowup } from './campaign-send';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createWriteStream } from 'node:fs';
@@ -187,6 +188,8 @@ export async function markImportFailed(importId: string, message: string) {
 export async function runJob(job: Job) {
   if (job.kind === 'process_version') return processVersion(job.payload.versionId);
   if (job.kind === 'unzip_import') return processImport(job.payload.importId);
+  if (job.kind === 'campaign_send') return runCampaignSend(job.payload.campaignId, Number(job.payload.step) === 1 ? 1 : 0);
+  if (job.kind === 'campaign_followup') return runFollowup(job.payload.campaignId);
   throw new PermanentError(`type de tâche inconnu : ${job.kind}`);
 }
 

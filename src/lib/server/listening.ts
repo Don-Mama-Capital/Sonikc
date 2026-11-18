@@ -63,8 +63,10 @@ export async function trackStats(userId: string, trackId: string) {
              coalesce(sum(listened_ms), 0)::int as "totalMs"
       from listen_sessions where track_id = ${trackId} group by source order by plays desc, source`;
     const recent = await tx<{ id: string; who: string | null; source: string; startedAt: Date; listenedMs: number; durationMs: number | null }[]>`
-      select id, listener_name as who, source, started_at as "startedAt", listened_ms as "listenedMs", duration_ms as "durationMs"
-      from listen_sessions where track_id = ${trackId} order by started_at desc limit 20`;
+      select s.id, coalesce(s.listener_name, ct.name, ct.email) as who, s.source, s.started_at as "startedAt",
+             s.listened_ms as "listenedMs", s.duration_ms as "durationMs"
+      from listen_sessions s left join contacts ct on ct.id = s.contact_id
+      where s.track_id = ${trackId} order by s.started_at desc limit 20`;
     return { ...totals, bySource, recent: recent.map((r) => ({ ...r, startedAt: r.startedAt.toISOString() })) };
   });
 }

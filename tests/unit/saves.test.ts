@@ -76,7 +76,7 @@ describe('Lot 2.4 — Reçus', () => {
     expect(await sharedFile(ctx(fan.id, s.linkId), { kind: 'project', targetId: s.project.id } as never, s.a.versionId, 'preview')).toBeNull();
     // Aucune copie : un enregistrement ne contient qu'une référence au lien.
     const cols = await asService((tx) => tx<{ column_name: string }[]>`select column_name from information_schema.columns where table_name = 'saves' order by column_name`);
-    expect(cols.map((c) => c.column_name)).toEqual(['created_at', 'id', 'link_id', 'owner_id', 'user_id']);
+    expect(cols.map((c) => c.column_name)).toEqual(['contact_id', 'created_at', 'id', 'link_id', 'owner_id', 'user_id']); // contact_id : lot 3.1
 
     // Invitation retirée.
     const inv = await setup();

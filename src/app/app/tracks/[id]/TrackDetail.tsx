@@ -48,7 +48,10 @@ export function TrackDetail({ data, notation }: { data: Data; notation: Notation
           <h1 className="truncate text-2xl font-bold" data-testid="track-title">{track.title}</h1>
           <p className="text-sm text-mute">Version écoutée : {track.version?.label ?? '–'} · {formatDuration(track.version?.durationMs)}</p>
         </div>
-        <button className="btn-ghost shrink-0" data-testid="share" onClick={() => setSharing((v) => !v)}>Partager</button>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button className="btn-ghost" data-testid="share" onClick={() => setSharing((v) => !v)}>Partager</button>
+        <a className="btn-ghost" href={`/app/campaigns/new?kind=track&id=${track.id}`} data-testid="send-email">Envoyer par email</a>
       </div>
       {sharing && <SharePanel kind="track" id={track.id} onClose={() => setSharing(false)} />}
       <StatsPanel kind="track" id={track.id} />
