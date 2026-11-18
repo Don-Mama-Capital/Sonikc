@@ -13,6 +13,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
     return json({ saved: false });
   }
   if (r.status !== 'ok') return fail(404, 'Introuvable.');
-  try { await saveLink(r.ctx); } catch { return fail(404, 'Introuvable.'); }
-  return json({ saved: true });
+  try {
+    return json({ saved: await saveLink(r.ctx) });
+  } catch (e) {
+    if (String((e as Error).message).includes('too many saves')) return fail(400, 'Limite atteinte : 200 partages enregistrés. Retire ceux qui ne servent plus.');
+    return fail(404, 'Introuvable.');
+  }
 }

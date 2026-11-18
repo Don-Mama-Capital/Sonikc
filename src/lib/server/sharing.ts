@@ -18,7 +18,8 @@ const trackVisibilitySchema = z.enum(['inherit', 'private', 'invite', 'public'])
 const labelSchema = z.string().trim().min(1).max(60);
 const emailSchema = z.string().trim().toLowerCase().email().max(254);
 const passwordSchema = z.string().min(8, 'Mot de passe : 8 caractères minimum.').max(100);
-const MAX_INVITES_PER_DAY = 50; // garde-fou contre l'envoi de masse depuis l'adresse de Sonikc
+const MAX_INVITES_PER_DAY = 50;
+const MAX_LINKS_PER_OBJECT = 50; // garde-fou contre l'envoi de masse depuis l'adresse de Sonikc
 
 const table = (k: ShareKind) => (k === 'project' ? 'projects' : 'tracks');
 const col = (k: ShareKind) => (k === 'project' ? 'project_id' : 'track_id');
@@ -85,6 +86,8 @@ export async function createLink(userId: string, kind: ShareKind, id: string, ra
   const label = labelSchema.parse(rawLabel);
   return withUser(userId, async (tx) => {
     await target(tx, kind, id);
+    const [{ n }] = await tx<{ n: number }[]>`select count(*)::int as n from share_links where ${tx(col(kind))} = ${id} and revoked_at is null`;
+    if (n >= MAX_LINKS_PER_OBJECT) throw new Invalid(`Limite atteinte : ${MAX_LINKS_PER_OBJECT} liens actifs par partage. Révoque ceux qui ne servent plus.`);
     const [l] = await tx<{ id: string }[]>`insert into share_links (owner_id, ${tx(col(kind))}, label) values (${userId}, ${id}, ${label}) returning id`;
     return { id: l.id, label, url: shareUrl(l.id) };
   });

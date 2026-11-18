@@ -46,7 +46,7 @@ export function NotificationBell() {
             <Link key={n.id} href={n.trackId ? `/app/tracks/${n.trackId}` : n.projectId ? `/app/projects/${n.projectId}` : '/app'} onClick={() => setOpen(false)}
               className={`block rounded-xl px-3 py-2 text-sm hover:bg-panel-2 ${n.read ? 'text-mute' : ''}`} data-testid="notification">
               <span className="font-medium text-text">{n.actor ?? 'Quelqu’un'}</span>
-              {n.count > 1 ? ` et ${n.count - 1} autre${n.count > 2 ? 's' : ''} ${VERB[n.kind]?.[1] ?? n.kind}` : ` ${VERB[n.kind]?.[0] ?? n.kind}`}{' '}
+              {n.count > 1 ? ` et ${n.count - 1} autre${n.count > 2 ? 's' : ''} personne${n.count > 2 ? 's' : ''} ${VERB[n.kind]?.[1] ?? n.kind}` : ` ${VERB[n.kind]?.[0] ?? n.kind}`}{' '}
               <span className="text-text">« {n.title ?? 'un partage'} »</span>
               <span className="block text-xs text-mute">{n.source ? `via ${n.source} · ` : ''}{new Date(n.createdAt).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
             </Link>

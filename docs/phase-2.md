@@ -158,3 +158,13 @@ Après correction : 112 tests et 14 parcours dans Chrome au vert.
 | 4 | Test : colonne « Enregistrés » par lien ; une seule notification même après retrait puis nouvel enregistrement. Chrome : la cloche affiche « a enregistré » |
 | 5 | Test : anonyme refusé, propriétaire ignoré, enregistrements d'un autre compte invisibles et impossibles à retirer, lien sans accès refusé |
 | 6 | Test : 3 écoutes → une notification avec compteur 3. Chrome à 375 px : aucun défilement horizontal (capture `test-results/recus-mobile.png`) |
+
+### Lot 2.4 — relecture indépendante et itération 2
+
+Aucune faille d'accès trouvée (lecture via Reçus sans droit, enregistrement sans accès ou au nom d'un autre, RLS, CSRF : vert). Deux points « à surveiller » et trois remarques mineures, tous corrigés et testés :
+
+1. **Coût de la page Reçus** : authentification de tous les liens d'une page en une seule requête, pages de 30, plafond de 200 partages enregistrés par compte et de 50 liens actifs par partage. Test « garde-fous ».
+2. **Compteur des notifications** : il compte désormais des personnes (compte ou visiteur) et non des sessions, garde le nom du premier auditeur, et regroupe par lien (deux liens au même nom restent séparés). Test reprenant le scénario de la revue.
+3. Mineur : la route d'enregistrement renvoie le vrai résultat ; un partage protégé dont le déverrouillage a expiré propose « Ouvrir » pour ressaisir le mot de passe.
+
+Après correction : 119 tests et 15 parcours dans Chrome au vert.

@@ -19,8 +19,11 @@ export function ReceivedList({ items }: { items: Received[] }) {
         if (!it.available) {
           return (
             <li key={it.id} className="card flex items-center justify-between gap-3 p-4 text-sm" data-testid="received-item" data-available="false">
-              <span className="text-mute">{it.reason === 'password' ? 'Partage protégé : son mot de passe a changé.' : 'Ce partage n’est plus disponible : le producteur l’a retiré.'}</span>
-              <button className="shrink-0 text-mute underline hover:text-text" onClick={() => remove(it.linkId)}>Retirer</button>
+              <span className="text-mute">{it.reason === 'password' ? 'Partage protégé par un mot de passe : ouvre-le pour le déverrouiller.' : 'Ce partage n’est plus disponible : le producteur l’a retiré.'}</span>
+              <span className="flex shrink-0 gap-3">
+                {it.reason === 'password' && <Link className="text-mute underline hover:text-text" href={`/s/${it.token}`}>Ouvrir</Link>}
+                <button className="text-mute underline hover:text-text" onClick={() => remove(it.linkId)}>Retirer</button>
+              </span>
             </li>
           );
         }

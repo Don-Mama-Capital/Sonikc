@@ -26,9 +26,7 @@ export type Resolution =
 export const unlockCookieName = (linkId: string) => `sk_unlock_${linkId.replace(/-/g, '').slice(0, 12)}`;
 export const unlockValue = (linkId: string, passwordHash: string) => hmac(`unlock:${linkId}:${passwordHash}`);
 
-async function linkMeta(linkId: string): Promise<LinkMeta | null> {
-  return asService(async (tx) => {
-    const [r] = await tx<LinkMeta[]>`
+const metaQuery = (tx: import('./db').Tx, ids: string[]) => tx<LinkMeta[]>`
       select l.id as "linkId", l.owner_id as "ownerId",
              case when l.project_id is not null then 'project' else 'track' end as kind,
              coalesce(l.project_id, l.track_id) as "targetId",
@@ -39,9 +37,17 @@ async function linkMeta(linkId: string): Promise<LinkMeta | null> {
       left join projects p on p.id = l.project_id and p.deleted_at is null
       left join tracks t on t.id = l.track_id and t.deleted_at is null
       left join profiles pf on pf.user_id = l.owner_id
-      where l.id = ${linkId} and l.revoked_at is null and (p.id is not null or t.id is not null)`;
-    return r ?? null;
-  });
+      where l.id = any(${ids}::uuid[]) and l.revoked_at is null and (p.id is not null or t.id is not null)`;
+
+async function linkMeta(linkId: string): Promise<LinkMeta | null> {
+  return (await linkMetas([linkId])).get(linkId) ?? null;
+}
+
+/** Authentification de plusieurs liens en une seule requête (page « Reçus »). */
+export async function linkMetas(ids: string[]): Promise<Map<string, LinkMeta>> {
+  if (!ids.length) return new Map();
+  const rows = await asService((tx) => metaQuery(tx, ids));
+  return new Map(rows.map((r) => [r.linkId, r]));
 }
 
 export async function resolveLink(token: string, userId: string | null, unlockCookie: string | undefined): Promise<Resolution> {
@@ -49,6 +55,12 @@ export async function resolveLink(token: string, userId: string | null, unlockCo
   if (!linkId) return { status: 'not_found' };
   const meta = await linkMeta(linkId);
   if (!meta) return { status: 'not_found' };
+  return resolveWithMeta(meta, userId, unlockCookie);
+}
+
+/** Décision d'accès une fois le lien authentifié ; « check » = vérifier en base que la cible est lisible. */
+export async function resolveWithMeta(meta: LinkMeta, userId: string | null, unlockCookie: string | undefined, check = true): Promise<Resolution> {
+  const linkId = meta.linkId;
   const isOwner = userId === meta.ownerId;
   if (isOwner) return { status: 'ok', meta, ctx: { userId, linkId, unlocked: true }, isOwner };
   if (!meta.visibility || meta.visibility === 'private') return { status: 'not_found' };
@@ -60,7 +72,7 @@ export async function resolveLink(token: string, userId: string | null, unlockCo
     return { status: 'password', ownerName: meta.ownerName, linkId };
   }
   const ctx: ViewerCtx = { userId, linkId, unlocked };
-  if (!(await canSeeTarget(ctx, meta))) return meta.visibility === 'invite' ? { status: 'denied', ownerName: meta.ownerName } : { status: 'not_found' };
+  if (check && !(await canSeeTarget(ctx, meta))) return meta.visibility === 'invite' ? { status: 'denied', ownerName: meta.ownerName } : { status: 'not_found' };
   return { status: 'ok', meta, ctx, isOwner };
 }
 

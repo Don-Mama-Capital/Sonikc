@@ -12,7 +12,11 @@ create table saves (
 create index saves_link_idx on saves (link_id);
 
 alter table notifications add column project_id uuid references projects(id) on delete cascade,
-  add column count int not null default 1 check (count >= 1);
+  add column link_id uuid references share_links(id) on delete cascade,
+  add column count int not null default 1 check (count >= 1),
+  -- Auditeurs déjà comptés dans une notification regroupée (compte connecté ou identifiant visiteur) :
+  -- le compteur compte des personnes, pas des sessions.
+  add column listener_keys text[] not null default '{}';
 alter table notifications drop constraint notifications_kind_check;
 alter table notifications add constraint notifications_kind_check check (kind in ('listen', 'download', 'favorite', 'save'));
 
@@ -33,6 +37,11 @@ begin
   if lid is null or not exists (select 1 from app.link_grants()) then raise exception 'not allowed'; end if;
   select * into l from share_links where id = lid;
   if l.owner_id = uid then return false; end if;
+  -- Garde-fou : 200 partages enregistrés par compte au plus.
+  if not exists (select 1 from saves where user_id = uid and link_id = lid)
+     and (select count(*) from saves where user_id = uid) >= 200 then
+    raise exception 'too many saves';
+  end if;
   insert into saves (user_id, link_id, owner_id) values (uid, lid, l.owner_id) on conflict do nothing;
   if found and not exists (select 1 from notifications where owner_id = l.owner_id and kind = 'save' and actor_id = uid
                            and project_id is not distinct from l.project_id and track_id is not distinct from l.track_id) then
@@ -47,7 +56,7 @@ grant execute on function app.save_link() to sonikc_app;
 
 create or replace function app.listen_start(p_track uuid, p_visitor text) returns table (session_id uuid, tracked boolean, resumed boolean)
 language plpgsql security definer set search_path = public, pg_temp as $$
-declare uid uuid := app.current_user_id(); lid uuid := app.current_link(); t record; s uuid; src text; who text;
+declare uid uuid := app.current_user_id(); lid uuid := app.current_link(); t record; s uuid; src text; who text; lkey text; nid bigint;
 begin
   select id, owner_id, current_version_id into t from tracks where id = p_track and deleted_at is null;
   if t.id is null then raise exception 'not allowed'; end if;
@@ -71,14 +80,22 @@ begin
   values (t.owner_id, p_track, t.current_version_id, lid, uid, who, p_visitor, src,
           (select duration_ms from track_versions where id = t.current_version_id))
   returning id into s;
-  -- Notifications regroupées : une notification non lue par morceau et par lien, dont le compteur augmente
-  -- tant qu'elle n'est pas lue et que la dernière écoute date de moins de 10 min.
-  update notifications set count = count + 1, created_at = now(), actor = coalesce(who, actor), session_id = s
-    where id = (select n.id from notifications n where n.owner_id = t.owner_id and n.kind = 'listen' and n.track_id = p_track
-                and n.source is not distinct from src and n.read_at is null and n.created_at > now() - interval '10 minutes'
-                order by n.created_at desc limit 1);
-  if not found then
-    insert into notifications (owner_id, kind, track_id, session_id, actor, source) values (t.owner_id, 'listen', p_track, s, who, src);
+  -- Notifications regroupées : une notification non lue par morceau et par lien, mise à jour tant qu'elle
+  -- n'est pas lue et que la dernière écoute date de moins de 10 min. Le premier nom affiché est conservé ;
+  -- le compteur n'augmente que pour une personne pas encore comptée dans ce groupe.
+  lkey := coalesce(uid::text, p_visitor);
+  select n.id into nid from notifications n
+    where n.owner_id = t.owner_id and n.kind = 'listen' and n.track_id = p_track and n.link_id = lid
+      and n.read_at is null and n.created_at > now() - interval '10 minutes'
+    order by n.created_at desc limit 1 for update;
+  if nid is not null then
+    update notifications set created_at = now(), actor = coalesce(actor, who), session_id = s,
+           count = case when lkey = any(listener_keys) then count else count + 1 end,
+           listener_keys = case when lkey = any(listener_keys) or cardinality(listener_keys) >= 200 then listener_keys else listener_keys || lkey end
+      where id = nid;
+  else
+    insert into notifications (owner_id, kind, track_id, link_id, session_id, actor, source, listener_keys)
+    values (t.owner_id, 'listen', p_track, lid, s, who, src, array[lkey]);
   end if;
   return query select s, true, false;
 end $$;
