@@ -37,6 +37,18 @@ export async function asService<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   return sql().begin(fn) as Promise<T>;
 }
 
+/**
+ * Transaction au rôle `sonikc_app` sans utilisateur : pour les liens publics des emails (ouverture, clic,
+ * désinscription), dont la signature a déjà été vérifiée ; seules des fonctions de la base y écrivent.
+ */
+export async function asApp<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  return sql().begin(async (tx) => {
+    await tx`select set_config('app.user_id', '', true)`;
+    await tx`set local role sonikc_app`;
+    return fn(tx);
+  }) as Promise<T>;
+}
+
 export type ViewerCtx = { userId: string | null; linkId: string; unlocked: boolean };
 
 /**

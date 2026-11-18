@@ -55,3 +55,22 @@
 | 5 | `tests/e2e/contacts.spec.ts` à 375 px : import (2 ajoutés, 1 fusionné, 1 ignoré), recherche, groupe à règle par tag, fiche ; aucun défilement horizontal (capture `test-results/contacts-mobile.png`) |
 
 En plus : sur mobile, la barre de navigation devient un menu déroulant (elle débordait avec la nouvelle entrée « Contacts »).
+
+### Lot 3.2 — itération 1 : 6/6 au vert (relecture indépendante en fin de phase)
+
+| # | Preuve |
+| --- | --- |
+| 1 | `tests/unit/campaigns.test.ts` : liens différents par destinataire ; via son lien, l'écoute anonyme est attribuée au contact (stats « écoutes récentes » et notification à son nom) ; objet et message personnalisés, réponse vers l'adresse du producteur |
+| 2 | Test : en-têtes `List-Unsubscribe` et `List-Unsubscribe-Post` présents ; après désinscription, le contact est marqué, un nouvel envoi l'exclut, même ciblé explicitement. Chrome : bouton « Me désinscrire », contact marqué « désinscrit » |
+| 3 | Test : plafond de 2 par producteur → 2 partis, le reste reprogrammé à 00 h 05 UTC ; messagerie en panne → 3 essais espacés puis « Erreur », aucun email parti ; chaque envoi porte une clé d'idempotence (aucun doublon côté messagerie), un envoi interrompu n'est jamais renvoyé |
+| 4 | Test : deux ouvertures et deux clics → comptés une fois ; le clic mène au lien personnel ; jeton falsifié refusé |
+| 5 | Test : partage privé refusé ; sur invitation, chaque destinataire est invité et l'email l'explique. En plus : un autre producteur ne voit, n'annule ni n'envoie rien avec mes campagnes ou mes contacts |
+| 6 | `tests/e2e/campaign.spec.ts` : privé bloqué avec explication ; composer, envoyer, email reçu (« Un beat pour Inès »), clic, écoute réelle, envoi marqué « a écouté » avec le nom, écoutes récentes du morceau au nom du contact (capture `test-results/campaign.png`) |
+
+### Lot 3.3 — itération 1 : 3/3 au vert
+
+| # | Preuve |
+| --- | --- |
+| 1 | Test : programmé dans 2,5 s → rien avant, parti après, moins d'une minute d'écart (le worker vérifie la file chaque seconde) |
+| 2 | Test sur 5 destinataires : écouté, cliqué, répondu, désinscrit, rien → seule la 5e personne reçoit la relance, personnalisée ; relance programmée à J+3 |
+| 3 | Test : envoi programmé annulé → rien ne part, envois marqués « annulé » ; une campagne déjà partie ne s'annule plus ; relance annulée → rien ne part |

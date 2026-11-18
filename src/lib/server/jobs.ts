@@ -1,10 +1,10 @@
 import type { Tx } from './db';
 import { asService } from './db';
 
-export type JobKind = 'process_version' | 'unzip_import';
+export type JobKind = 'process_version' | 'unzip_import' | 'campaign_send' | 'campaign_followup';
 
-export async function enqueue(tx: Tx, kind: JobKind, payload: Record<string, unknown>) {
-  await tx`insert into jobs (kind, payload) values (${kind}, ${tx.json(payload as never)})`;
+export async function enqueue(tx: Tx, kind: JobKind, payload: Record<string, unknown>, runAfter: Date = new Date()) {
+  await tx`insert into jobs (kind, payload, run_after) values (${kind}, ${tx.json(payload as never)}, ${runAfter})`;
 }
 
 export type Job = { id: number; kind: JobKind; payload: Record<string, string>; attempts: number; maxAttempts: number };

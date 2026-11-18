@@ -12,6 +12,7 @@ const TITLE = { auto: 'écriture usuelle', sharps: 'toujours des dièses', flats
 const LINKS = [
   { href: '/app', label: 'Bibliothèque' },
   { href: '/app/contacts', label: 'Contacts' },
+  { href: '/app/campaigns', label: 'Envois' },
   { href: '/recus', label: 'Reçus' },
   { href: '/app/trash', label: 'Corbeille' },
 ];
