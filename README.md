@@ -23,8 +23,9 @@ En local, les emails (codes de connexion) sont écrits dans `.data/mail/` au lie
 ## Tests
 
 ```bash
-npm test                          # 49 tests : accès, connexion, envoi, analyse audio, bibliothèque
+npm test                          # 55 tests : accès, connexion, envoi, analyse audio, bibliothèque
 npm run build && npm run test:e2e # 9 parcours dans Chrome
+npm run lighthouse          # audit mobile (serveur de recette lancé : npx tsx scripts/e2e-server.ts)
 ```
 
 Voir `docs/phase-1.md` pour le rapport de la phase 1 et `CLAUDE.md` pour les règles de travail.
