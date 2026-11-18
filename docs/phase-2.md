@@ -59,3 +59,14 @@
 | 2 | Entonnoir par lien : ouvertures → lectures → plus de 30 s → écoute complète → téléchargement | Test |
 | 3 | Notification dans l'app en moins de 10 s après le début d'une écoute | Parcours Chrome (deux navigateurs) |
 | 4 | Liste des écoutes récentes : qui (nom du compte ou « anonyme »), source, date, durée | Test + capture |
+
+## Résultats
+
+### Lot 2.0 — itération 1 : 4/4 au vert, lot gelé
+
+| # | Preuve |
+| --- | --- |
+| 1 | `tests/unit/google.test.ts` (parcours complet contre le faux Google) ; `tests/e2e/google.spec.ts` : bouton → compte Google → profil → bibliothèque, puis reconnexion directe |
+| 2 | Test « même adresse qu'un compte existant » : un seul compte, liaison au premier passage, majuscules ignorées |
+| 3 | Un test par protection : state falsifié, absent ou d'une autre tentative ; tentative de plus de 10 min ; code volé rejoué sans le vérificateur PKCE ; signature d'une autre clé ; émetteur, audience, expiration, nonce ; algorithme « none » ; email non vérifié (aussi dans Chrome). En plus : adresse déjà liée à un autre compte Google refusée |
+| 4 | Test : sans identifiants, `googleConfig()` vide et la route répond 404 ; le bouton n'est rendu que si la configuration existe |
