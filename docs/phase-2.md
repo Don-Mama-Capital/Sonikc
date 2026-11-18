@@ -70,3 +70,17 @@
 | 2 | Test « même adresse qu'un compte existant » : un seul compte, liaison au premier passage, majuscules ignorées |
 | 3 | Un test par protection : state falsifié, absent ou d'une autre tentative ; tentative de plus de 10 min ; code volé rejoué sans le vérificateur PKCE ; signature d'une autre clé ; émetteur, audience, expiration, nonce ; algorithme « none » ; email non vérifié (aussi dans Chrome). En plus : adresse déjà liée à un autre compte Google refusée |
 | 4 | Test : sans identifiants, `googleConfig()` vide et la route répond 404 ; le bouton n'est rendu que si la configuration existe |
+
+### Lot 2.1 — itération 1 : 7/7 au vert, lot gelé (relecture indépendante en fin de phase)
+
+| # | Preuve |
+| --- | --- |
+| 1 | `tests/unit/sharing.test.ts` : privé → introuvable pour anonyme, autre compte et ancien lien ; requêtes directes sur projets, morceaux, versions et liaisons au nom d'un tiers avec un lien valide → vide (RLS) |
+| 2 | Test + `tests/e2e/share.spec.ts` : lien d'invitation reçu par email, connexion exigée, autre adresse refusée, adresse invitée (casse ignorée) admise sans profil de producteur |
+| 3 | Test : lien révoqué et invitation retirée → introuvable/refusé à la requête suivante, audio compris ; Chrome : page et audio en 404 après révocation |
+| 4 | Test : morceau privé absent et son audio refusé même avec son identifiant ; morceau protégé par son propre mot de passe absent du projet |
+| 5 | Test : sans mot de passe rien n'est lisible ; 5 erreurs → bloqué 15 min ; nouveau mot de passe → anciens déverrouillages annulés. Chrome : mauvais puis bon mot de passe |
+| 6 | Test : adresse audio expirée, falsifiée ou d'une autre version refusée ; l'ancienne version n'est plus servie quand une nouvelle devient courante |
+| 7 | Chrome à 375 px : aucun défilement horizontal, lecture qui démarre (capture `test-results/share-mobile.png`) ; Lighthouse mobile de la page partagée : accessibilité 100 (SEO 60 voulu : page non indexée) |
+
+Précision apportée en cours de lot (sans changer les critères) : un morceau sans réglage propre « suit le projet » ; partagé seul, il reste privé. Sinon, partager un projet aurait affiché une page vide, puisque tous les morceaux sont privés par défaut.

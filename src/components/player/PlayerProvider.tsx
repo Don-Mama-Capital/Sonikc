@@ -2,7 +2,11 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
-export type QueueItem = { id: string; title: string; url: string; waveform: number[] | null; durationMs: number | null; subtitle?: string };
+export type QueueItem = {
+  id: string; title: string; url: string; waveform: number[] | null; durationMs: number | null; subtitle?: string;
+  /** Écoute d'un morceau partagé : mesurée et envoyée au propriétaire (lot 2.2). */
+  listen?: { token: string; trackId: string };
+};
 
 type PlayerState = {
   queue: QueueItem[];
