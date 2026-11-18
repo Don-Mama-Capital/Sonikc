@@ -121,7 +121,7 @@ describe('Lot 2.1 — accès', () => {
     expect(view!.tracks.map((t) => t.title)).toEqual(['Ouvert']);
     expect(await sharedFile(r.ctx, r.meta, s.t2.versionId, 'preview')).toBeNull();
     // Un morceau protégé par son propre mot de passe n'apparaît pas non plus dans le projet.
-    await updateShareSettings(s.owner.id, 'track', s.t2.id, { visibility: 'inherit', password: 'secret1' });
+    await updateShareSettings(s.owner.id, 'track', s.t2.id, { visibility: 'inherit', password: 'secret123' });
     expect((await loadShared(s.token, r))!.tracks.map((t) => t.title)).toEqual(['Ouvert']);
     await updateShareSettings(s.owner.id, 'track', s.t2.id, { password: null });
     expect((await loadShared(s.token, r))!.tracks.map((t) => t.title)).toEqual(['Ouvert', 'Secret']);
@@ -142,6 +142,17 @@ describe('Lot 2.1 — accès', () => {
     // 5 erreurs pour un visiteur : bloqué 15 min, même avec le bon mot de passe.
     for (let i = 0; i < 5; i++) await unlock(s.token, `faux${i}`, 'v2');
     expect(await unlock(s.token, 'bonmotdepasse', 'v2')).toMatchObject({ ok: false, error: 'rate_limited' });
+    // Effacer son cookie ne suffit pas : 5 erreurs depuis la même adresse IP bloquent aussi.
+    for (let i = 0; i < 5; i++) await unlock(s.token, `faux${i}`, randomUUID(), '203.0.113.7');
+    expect(await unlock(s.token, 'bonmotdepasse', randomUUID(), '203.0.113.7')).toMatchObject({ ok: false, error: 'rate_limited' });
+    // Des dizaines d'erreurs venues d'ailleurs ralentissent le lien mais ne bloquent pas un vrai auditeur.
+    const noWait = async () => {};
+    for (let i = 0; i < 31; i++) await unlock(s.token, `x${i}`, randomUUID(), `198.51.100.${i}`, noWait);
+    let slowed = false;
+    expect(await unlock(s.token, 'bonmotdepasse', randomUUID(), '192.0.2.1', async () => { slowed = true; })).toMatchObject({ ok: true });
+    expect(slowed).toBe(true);
+    // Mot de passe trop court refusé.
+    await expect(updateShareSettings(s.owner.id, 'project', s.project.id, { password: 'court' })).rejects.toThrow();
     // Nouveau mot de passe : l'ancien déverrouillage ne vaut plus rien.
     await updateShareSettings(s.owner.id, 'project', s.project.id, { password: 'nouveau-mdp' });
     expect((await resolveLink(s.token, null, good.value)).status).toBe('password');
@@ -176,6 +187,13 @@ describe('Lot 2.1 — accès', () => {
     expect(await sharedFile(r.ctx, r.meta, s.t1.versionId, 'original')).toBeNull();
     await updateShareSettings(s.owner.id, 'project', s.project.id, { allowDownload: true });
     expect(await sharedFile(r.ctx, r.meta, s.t1.versionId, 'original')).toMatchObject({ filename: 'beat.wav' });
+  });
+
+  it('invitations limitées à 50 par jour et par compte (pas d’envoi de masse)', async () => {
+    const s = await setup('invite');
+    await asService((tx) => tx`insert into invites (owner_id, project_id, email, created_at)
+      select ${s.owner.id}, ${s.project.id}, 'x' || g || '@test.local', now() - interval '1 hour' from generate_series(1, 50) g`);
+    await expect(invite(s.owner.id, 'project', s.project.id, 'de-trop@test.local', 'Prod')).rejects.toThrow('50 invitations');
   });
 
   it('un tiers ne peut ni lire ni modifier les réglages ou les liens d’un autre', async () => {

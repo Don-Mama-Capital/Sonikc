@@ -40,6 +40,7 @@ create table unlock_attempts (
   id bigserial primary key,
   link_id uuid not null references share_links(id) on delete cascade,
   visitor text not null,
+  ip text not null default 'unknown',
   created_at timestamptz not null default now()
 );
 create index unlock_attempts_idx on unlock_attempts (link_id, created_at desc);
@@ -107,7 +108,9 @@ language sql stable security definer set search_path = public, pg_temp as $$
   union all select project_id, track_id from pt
   union all select null::uuid, id from st
 $$;
-grant execute on function app.link_grants() to sonikc_app;
+-- Défense en profondeur : seules l'app (sonikc_app) et les fonctions elles-mêmes peuvent les appeler.
+revoke all on function app.link_grants(), app.level_ok(text, uuid, uuid), app.viewer_invited(uuid, uuid), app.check_share_target() from public;
+grant execute on function app.link_grants(), app.level_ok(text, uuid, uuid), app.viewer_invited(uuid, uuid) to sonikc_app;
 
 grant select, insert, update, delete on share_links, invites to sonikc_app;
 alter table share_links enable row level security;

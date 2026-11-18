@@ -133,25 +133,27 @@ export async function sharedFile(ctx: ViewerCtx, meta: LinkMeta, versionId: stri
   });
 }
 
-const MAX_FAILS_PER_VISITOR = 5;
-const MAX_FAILS_PER_LINK = 30;
+const MAX_FAILS_PER_VISITOR = 5; // par cookie visiteur
+const MAX_FAILS_PER_IP = 5; // par adresse IP (si l'hébergeur la fournit), le cookie pouvant être effacé
+const SLOW_AFTER_LINK_FAILS = 30; // au-delà, chaque essai sur ce lien attend : on freine sans bloquer les vrais auditeurs
+const SLOW_MS = 2000;
 
 /** Vérifie un mot de passe de partage (flux d'authentification : accès service), avec limites d'essais. */
-export async function unlock(token: string, password: string, visitor: string) {
+export async function unlock(token: string, password: string, visitor: string, ip = 'unknown', sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))) {
   const linkId = parseLinkToken(token);
   if (!linkId) return { ok: false as const, error: 'not_found' as const };
   const meta = await linkMeta(linkId);
   if (!meta?.passwordHash) return { ok: false as const, error: 'not_found' as const };
-  return asService(async (tx) => {
-    await tx`select pg_advisory_xact_lock(hashtext(${`unlock:${linkId}`}))`;
-    const [{ mine, all }] = await tx<{ mine: number; all: number }[]>`
-      select count(*) filter (where visitor = ${visitor})::int as mine, count(*)::int as all
-      from unlock_attempts where link_id = ${linkId} and created_at > now() - interval '15 minutes'`;
-    if (mine >= MAX_FAILS_PER_VISITOR || all >= MAX_FAILS_PER_LINK) return { ok: false as const, error: 'rate_limited' as const };
-    if (!checkPassword(String(password).slice(0, 100), meta.passwordHash!)) {
-      await tx`insert into unlock_attempts (link_id, visitor) values (${linkId}, ${visitor})`;
-      return { ok: false as const, error: 'wrong' as const };
-    }
-    return { ok: true as const, cookieName: unlockCookieName(linkId), value: unlockValue(linkId, meta.passwordHash!) };
-  });
+  const counts = await asService(async (tx) => (await tx<{ mine: number; byIp: number; all: number }[]>`
+      select count(*) filter (where visitor = ${visitor})::int as mine,
+             count(*) filter (where ip = ${ip} and ip <> 'unknown')::int as "byIp",
+             count(*)::int as all
+      from unlock_attempts where link_id = ${linkId} and created_at > now() - interval '15 minutes'`)[0]);
+  if (counts.mine >= MAX_FAILS_PER_VISITOR || counts.byIp >= MAX_FAILS_PER_IP) return { ok: false as const, error: 'rate_limited' as const };
+  if (counts.all >= SLOW_AFTER_LINK_FAILS) await sleep(SLOW_MS);
+  if (!checkPassword(String(password).slice(0, 100), meta.passwordHash)) {
+    await asService((tx) => tx`insert into unlock_attempts (link_id, visitor, ip) values (${linkId}, ${visitor}, ${ip})`);
+    return { ok: false as const, error: 'wrong' as const };
+  }
+  return { ok: true as const, cookieName: unlockCookieName(linkId), value: unlockValue(linkId, meta.passwordHash) };
 }

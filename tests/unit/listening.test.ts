@@ -28,7 +28,8 @@ async function setup(label = 'Instagram') {
 
 /** Simule le temps qui passe : recule le dernier battement de la session. */
 const elapse = (sessionId: string, seconds: number) =>
-  asService((tx) => tx`update listen_sessions set last_beat_at = last_beat_at - ${`${seconds} seconds`}::interval where id = ${sessionId}`);
+  asService((tx) => tx`update listen_sessions set last_beat_at = last_beat_at - ${`${seconds} seconds`}::interval,
+                       started_at = started_at - ${`${seconds} seconds`}::interval where id = ${sessionId}`);
 
 describe('Lot 2.2 — suivi d’écoute', () => {
   it('1. durée mesurée à ± 5 s ; une durée annoncée trop longue est plafonnée par le temps écoulé', async () => {
@@ -44,6 +45,38 @@ describe('Lot 2.2 — suivi d’écoute', () => {
     expect(after! - ms).toBeLessThanOrEqual(7_100);
     // Un autre visiteur ne peut pas alimenter la session.
     expect(await listenBeat(s.ctx(), sessionId!, randomUUID(), 5000)).toBeNull();
+  });
+
+  it('1 bis. battements en rafale : rien n’est gagné au-delà du temps réel écoulé depuis le début', async () => {
+    const s = await setup();
+    const v = randomUUID();
+    const { sessionId } = await listenStart(s.ctx(), s.trackId, v);
+    const t0 = Date.now();
+    let last = 0;
+    for (let i = 0; i < 60; i++) last = (await listenBeat(s.ctx(), sessionId!, v, 600_000)) ?? last;
+    expect(last).toBeLessThanOrEqual(Date.now() - t0 + 2_100);
+  });
+
+  it('garde-fous : notifications regroupées, écoutes fabriquées en masse plafonnées', async () => {
+    const s = await setup();
+    for (let i = 0; i < 70; i++) await listenStart(s.ctx(), s.trackId, randomUUID());
+    const [{ sessions }] = await asService((tx) => tx<{ sessions: number }[]>`select count(*)::int as sessions from listen_sessions where track_id = ${s.trackId}`);
+    expect(sessions).toBe(60);
+    expect((await notifications(s.owner.id)).unread).toBe(1);
+  });
+
+  it('nom de l’auditeur : jamais son adresse sur un lien public ; son adresse s’il est invité', async () => {
+    const s = await setup();
+    const noProfile = await asService(async (tx) => (await tx<{ id: string }[]>`insert into users (email) values (${`np_${randomUUID().slice(0, 6)}@test.local`}) returning id`)[0]);
+    await listenStart(s.ctx(noProfile.id), s.trackId, randomUUID());
+    const guestEmail = `g_${randomUUID().slice(0, 6)}@test.local`;
+    const guest = await asService(async (tx) => (await tx<{ id: string }[]>`insert into users (email) values (${guestEmail}) returning id`)[0]);
+    const inv = await invite(s.owner.id, 'track', s.trackId, guestEmail, 'Prod');
+    expect(inv.email).toBe(guestEmail);
+    const [{ link_id }] = await asService((tx) => tx<{ link_id: string }[]>`select link_id from invites where email = ${guestEmail}`);
+    await listenStart({ userId: guest.id, linkId: link_id, unlocked: false }, s.trackId, randomUUID());
+    const names = await asService((tx) => tx<{ n: string }[]>`select listener_name as n from listen_sessions where track_id = ${s.trackId} order by started_at`);
+    expect(names.map((x) => x.n)).toEqual(['Auditeur connecté', guestEmail]);
   });
 
   it('2. rechargement : même visiteur, même morceau, même lien, moins de 30 min = même écoute', async () => {

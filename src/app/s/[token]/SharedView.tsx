@@ -71,7 +71,7 @@ export function SharedView({ token, view }: { token: string; view: View }) {
       </ul>
       {!visible.length && <p className="text-sm text-mute">Aucun morceau à écouter pour l’instant.</p>}
       <p className="text-xs text-mute" data-testid="tracking-notice">
-        {view.ownerName || 'Le producteur'} voit les écoutes de ce lien : date, morceaux écoutés et durée d’écoute. Si tu es connecté, ton nom de compte apparaît ; sinon tu restes anonyme.
+        {view.ownerName || 'Le producteur'} voit les écoutes de ce lien : date, morceaux écoutés et durée d’écoute. Si tu es connecté, ton nom d’artiste apparaît (ton adresse seulement si tu as été invité) ; sinon tu restes anonyme.
       </p>
     </div>
   );

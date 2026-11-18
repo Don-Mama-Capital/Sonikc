@@ -104,3 +104,29 @@ Précision apportée en cours de lot (sans changer les critères) : un morceau s
 | 2 | Test : 4 ouvertures (dont une en double ignorée) → 3 lectures → 2 au-delà de 30 s → 1 complète → 1 téléchargement |
 | 3 | Chrome, deux navigateurs : la cloche du propriétaire affiche l'écoute en moins de 10 s après le clic sur « Écouter » (interrogation toutes les 4 s) ; test : une notification par écoute, pas à la reprise |
 | 4 | Test + capture `test-results/stats.png` : écoutes récentes avec auditeur (ou « Anonyme »), source, date et durée |
+
+## Relecture de sécurité indépendante (fin de phase)
+
+Un agent qui n'avait pas écrit le code a relu en lecture seule les migrations 0003 à 0005, la connexion Google, le partage, le suivi des écoutes et les routes. Il a confirmé ses constats par des tests temporaires hors du dépôt.
+
+| Domaine | Verdict initial | Après correction |
+| --- | --- | --- |
+| Lecture par un tiers (privé, version, morceau masqué, stats, fichiers, injection) | Vert | Vert |
+| Niveau « sur invitation » | Vert | Vert |
+| Mot de passe de partage | Rouge | Vert |
+| Connexion Google | Vert | Vert (rattachement durci) |
+| Intégrité du suivi des écoutes | Rouge | Vert |
+| CSRF et cookies | Vert | Vert |
+| Abus et déni de service | À surveiller | Vert |
+
+Itération 2 des lots 2.0 à 2.2 : les 7 remarques sont corrigées, chacune couverte par un test.
+
+1. **Haute — durée gonflée par des battements en rafale** (la marge de 2 s s'additionnait) : le total est désormais plafonné par le temps réel écoulé depuis le début de l'écoute. Test « battements en rafale ».
+2. **Moyenne — avalanche d'écoutes et de notifications** : 60 nouvelles écoutes par lien et par 10 min au plus ; une notification non lue par morceau et par lien toutes les 10 min ; un téléchargement compté par visiteur et par heure ; une seule notification de favori par auditeur ; ouvertures plafonnées. Test « garde-fous ».
+3. **Moyenne — mot de passe** : limite de 5 erreurs par adresse IP en plus du cookie ; au-delà de 30 erreurs sur un lien, chaque essai est ralenti au lieu de bloquer les vrais auditeurs ; 8 caractères minimum. Tests dans `sharing.test.ts`.
+4. **Moyenne — invitations utilisables pour du spam** : 50 invitations par jour et par compte. Test.
+5. **Basse — adresse d'un auditeur visible sur un lien public** : l'adresse n'est montrée que pour un invité ; sinon nom d'artiste ou « Auditeur connecté ». Texte de la page ajusté. Test.
+6. **Basse — fonctions de partage appelables par PUBLIC** : droits retirés, réservés à l'app. Test dans `supabase-hardening.test.ts`.
+7. **Basse — rattachement Google d'une adresse hors Gmail** (domaine racheté) : rattachement automatique seulement pour Gmail ou un domaine Google Workspace ; sinon connexion par code d'abord. Test.
+
+Après correction : 112 tests et 14 parcours dans Chrome au vert.

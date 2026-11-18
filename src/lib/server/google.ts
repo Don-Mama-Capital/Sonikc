@@ -14,7 +14,7 @@ export const OAUTH_COOKIE = 'sk_oauth';
 const COOKIE_TTL_S = 600;
 
 export class GoogleError extends Error {
-  constructor(public code: 'not_configured' | 'bad_state' | 'expired' | 'token' | 'id_token' | 'email_unverified' | 'conflict', message: string) {
+  constructor(public code: 'not_configured' | 'bad_state' | 'expired' | 'token' | 'id_token' | 'email_unverified' | 'conflict' | 'link_required', message: string) {
     super(message);
   }
 }
@@ -79,7 +79,7 @@ async function jwks(url: string, force = false) {
   return keys as (JsonWebKey & { kid?: string })[];
 }
 
-export type GoogleIdentity = { sub: string; email: string; name: string | null };
+export type GoogleIdentity = { sub: string; email: string; name: string | null; hd?: string | null };
 
 /** Vérifie un jeton d'identité Google. Exporté pour les tests. */
 export async function verifyIdToken(idToken: string, expectedNonce: string, now = Date.now()): Promise<GoogleIdentity> {
@@ -106,7 +106,7 @@ export async function verifyIdToken(idToken: string, expectedNonce: string, now 
   if (typeof claims.nonce !== 'string' || !safeEqualStr(claims.nonce, expectedNonce)) throw new GoogleError('id_token', 'Nonce invalide.');
   if (claims.email_verified !== true && claims.email_verified !== 'true') throw new GoogleError('email_unverified', 'Adresse Google non vérifiée.');
   if (typeof claims.sub !== 'string' || typeof claims.email !== 'string') throw new GoogleError('id_token', 'Jeton incomplet.');
-  return { sub: claims.sub, email: claims.email.trim().toLowerCase(), name: typeof claims.name === 'string' ? claims.name : null };
+  return { sub: claims.sub, email: claims.email.trim().toLowerCase(), name: typeof claims.name === 'string' ? claims.name : null, hd: typeof claims.hd === 'string' ? claims.hd : null };
 }
 
 /** Retour de Google : échange le code, vérifie l'identité, ouvre une session. */
@@ -141,6 +141,12 @@ export async function signInGoogle(who: GoogleIdentity) {
       const [byEmail] = await tx<{ id: string; google_sub: string | null }[]>`select id, google_sub from users where lower(email) = ${who.email}`;
       if (byEmail?.google_sub && byEmail.google_sub !== who.sub) {
         throw new GoogleError('conflict', 'Cette adresse est déjà liée à un autre compte Google.');
+      }
+      // Google garantit durablement l'adresse d'un compte Gmail ou d'un domaine Workspace (hd). Pour une autre
+      // adresse, le domaine a pu changer de main : on n'attache pas un compte existant sans preuve par code email.
+      const googleOwned = /@(gmail|googlemail)\.com$/.test(who.email) || (who.hd && who.email.endsWith(`@${who.hd.toLowerCase()}`));
+      if (byEmail && !googleOwned) {
+        throw new GoogleError('link_required', 'Un compte existe déjà avec cette adresse : connecte-toi avec le code reçu par email.');
       }
       if (byEmail) {
         await tx`update users set google_sub = ${who.sub} where id = ${byEmail.id}`;

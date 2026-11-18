@@ -17,7 +17,8 @@ const visibilitySchema = z.enum(['private', 'invite', 'public']);
 const trackVisibilitySchema = z.enum(['inherit', 'private', 'invite', 'public']);
 const labelSchema = z.string().trim().min(1).max(60);
 const emailSchema = z.string().trim().toLowerCase().email().max(254);
-const passwordSchema = z.string().min(4, 'Mot de passe : 4 caractères minimum.').max(100);
+const passwordSchema = z.string().min(8, 'Mot de passe : 8 caractères minimum.').max(100);
+const MAX_INVITES_PER_DAY = 50; // garde-fou contre l'envoi de masse depuis l'adresse de Sonikc
 
 const table = (k: ShareKind) => (k === 'project' ? 'projects' : 'tracks');
 const col = (k: ShareKind) => (k === 'project' ? 'project_id' : 'track_id');
@@ -103,6 +104,8 @@ export async function invite(userId: string, kind: ShareKind, id: string, rawEma
   const email = emailSchema.parse(rawEmail);
   const { url, title } = await withUser(userId, async (tx) => {
     const t = await target(tx, kind, id);
+    const [{ n }] = await tx<{ n: number }[]>`select count(*)::int as n from invites where created_at > now() - interval '24 hours'`;
+    if (n >= MAX_INVITES_PER_DAY) throw new Invalid(`Limite atteinte : ${MAX_INVITES_PER_DAY} invitations par jour.`);
     const [exists] = await tx`select 1 from invites where ${tx(col(kind))} = ${id} and lower(email) = ${email} and revoked_at is null`;
     if (exists) throw new Invalid('Cette adresse est déjà invitée.');
     const [l] = await tx<{ id: string }[]>`insert into share_links (owner_id, ${tx(col(kind))}, label) values (${userId}, ${id}, ${`Invitation · ${email}`.slice(0, 60)}) returning id`;

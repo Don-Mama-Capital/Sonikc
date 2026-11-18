@@ -6,6 +6,7 @@ import { googleConfig, safeNext } from '@/lib/server/google';
 const ERRORS: Record<string, string> = {
   google_email_unverified: 'Ton adresse Google n’est pas vérifiée. Utilise la connexion par code.',
   google_conflict: 'Cette adresse est déjà liée à un autre compte Google.',
+  google_link_required: 'Un compte existe déjà avec cette adresse : connecte-toi avec le code reçu par email.',
   google_bad_state: 'La connexion Google a expiré. Recommence.',
   google_expired: 'La connexion Google a expiré. Recommence.',
 };

@@ -35,7 +35,12 @@ describe('Connexion avec Google', () => {
   });
 
   it('même adresse qu’un compte existant : même compte, pas de doublon ; deuxième passage reconnu par Google', async () => {
-    const existing = await makeUser();
+    const mail = `exist_${Date.now()}@gmail.com`;
+    const existing = await asService(async (tx) => {
+      const [u] = await tx<{ id: string }[]>`insert into users (email) values (${mail}) returning id`;
+      await tx`insert into profiles (user_id, handle, display_name) values (${u.id}, ${`ex_${Date.now() % 1e8}`}, 'Ex')`;
+      return { id: u.id, email: mail };
+    });
     const r = await fullFlow(existing.email);
     expect(r.userId).toBe(existing.id);
     expect(r.needsProfile).toBe(false);
@@ -120,6 +125,17 @@ describe('Connexion avec Google', () => {
       const res = await GET(new Request('http://localhost/api/auth/google/start'));
       expect(res.status).toBe(404);
     } finally { process.env.GOOGLE_CLIENT_ID = id; }
+  });
+
+  it('adresse hors Gmail d’un compte existant : pas de rattachement automatique (domaine racheté) ; domaine Workspace (hd) : rattaché', async () => {
+    const other = await makeUser(); // adresse @test.local
+    await expect(signInGoogle({ sub: `s-${Date.now()}`, email: other.email, name: null })).rejects.toMatchObject({ code: 'link_required' });
+    const ws = await makeUser();
+    const r = await signInGoogle({ sub: `w-${Date.now()}`, email: ws.email, name: null, hd: 'test.local' });
+    expect(r.userId).toBe(ws.id);
+    // Nouvelle adresse hors Gmail sans compte existant : création normale.
+    const fresh = await signInGoogle({ sub: `f-${Date.now()}`, email: `neuf_${Date.now()}@exemple.fr`, name: null });
+    expect(fresh.needsProfile).toBe(true);
   });
 
   it('adresse déjà liée à un autre compte Google : refusée, pas de prise de contrôle', async () => {

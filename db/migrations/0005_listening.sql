@@ -51,16 +51,24 @@ create table notifications (
   track_id uuid references tracks(id) on delete cascade,
   session_id uuid references listen_sessions(id) on delete cascade,
   actor text,
+  actor_id uuid references users(id) on delete set null,
   source text,
   created_at timestamptz not null default now(),
   read_at timestamptz
 );
 create index notifications_owner_idx on notifications (owner_id, created_at desc);
 
--- Nom affiché de l'auditeur connecté : son nom d'artiste s'il en a un, sinon son adresse.
-create or replace function app.viewer_name() returns text
+-- Nom affiché de l'auditeur connecté : son nom d'artiste ; son adresse seulement s'il est invité
+-- (le propriétaire la connaît déjà). Sur un lien public, un compte sans profil reste « Auditeur connecté ».
+create or replace function app.viewer_name(p_track uuid) returns text
 language sql stable security definer set search_path = public, pg_temp as $$
-  select coalesce(p.display_name, u.email) from users u left join profiles p on p.user_id = u.id
+  select coalesce(p.display_name,
+           case when exists (
+             select 1 from share_links l join invites i on i.link_id = l.id
+             where l.id = nullif(current_setting('app.link_id', true), '')::uuid and i.revoked_at is null and lower(i.email) = lower(u.email))
+             or app.viewer_invited((select l.project_id from share_links l where l.id = nullif(current_setting('app.link_id', true), '')::uuid), p_track)
+           then u.email else 'Auditeur connecté' end)
+  from users u left join profiles p on p.user_id = u.id
   where u.id = app.current_user_id()
 $$;
 
@@ -76,6 +84,7 @@ begin
   select owner_id into o from share_links where id = lid;
   if o = app.current_user_id() then return false; end if;
   if exists (select 1 from link_views where link_id = lid and visitor = p_visitor and created_at > now() - interval '30 minutes') then return false; end if;
+  if (select count(*) from link_views where link_id = lid and created_at > now() - interval '10 minutes') >= 300 then return false; end if;
   insert into link_views (owner_id, link_id, visitor, listener_id) values (o, lid, p_visitor, app.current_user_id());
   return true;
 end $$;
@@ -95,21 +104,30 @@ begin
     order by last_beat_at desc limit 1 for update;
   if s is not null then
     update listen_sessions set last_beat_at = now(), listener_id = coalesce(listener_id, uid),
-           listener_name = coalesce(listener_name, app.viewer_name()) where id = s;
+           listener_name = coalesce(listener_name, app.viewer_name(p_track)) where id = s;
     return query select s, true, true; return;
   end if;
+  -- Garde-fou contre les écoutes fabriquées en masse : 60 nouvelles écoutes par lien et par 10 min au plus.
+  if (select count(*) from listen_sessions where link_id = lid and started_at > now() - interval '10 minutes') >= 60 then
+    return query select null::uuid, false, false; return;
+  end if;
   select label into src from share_links where id = lid;
-  who := app.viewer_name();
+  who := app.viewer_name(p_track);
   insert into listen_sessions (owner_id, track_id, version_id, link_id, listener_id, listener_name, visitor, source, duration_ms)
   values (t.owner_id, p_track, t.current_version_id, lid, uid, who, p_visitor, src,
           (select duration_ms from track_versions where id = t.current_version_id))
   returning id into s;
-  insert into notifications (owner_id, kind, track_id, session_id, actor, source) values (t.owner_id, 'listen', p_track, s, who, src);
+  -- Une seule notification non lue par morceau et par lien toutes les 10 min (les écoutes restent toutes comptées).
+  if not exists (select 1 from notifications where owner_id = t.owner_id and kind = 'listen' and track_id = p_track
+                 and source is not distinct from src and read_at is null and created_at > now() - interval '10 minutes') then
+    insert into notifications (owner_id, kind, track_id, session_id, actor, source) values (t.owner_id, 'listen', p_track, s, who, src);
+  end if;
   return query select s, true, false;
 end $$;
 
 -- Battement : ajoute le temps réellement joué depuis le dernier battement, plafonné par le temps écoulé
--- (+2 s de marge réseau) : un client ne peut pas annoncer plus que ce qui a pu être écouté.
+-- (+2 s de marge réseau). Le total ne dépasse jamais le temps réel écoulé depuis le début de l'écoute
+-- (+2 s) : envoyer des battements en rafale ne fait rien gagner.
 create or replace function app.listen_beat(p_session uuid, p_visitor text, p_played_ms int) returns int
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare lid uuid := app.current_link(); r int;
@@ -118,7 +136,8 @@ begin
     listened_ms = least(
       ls.listened_ms + least(greatest(coalesce(p_played_ms, 0), 0),
                              (extract(epoch from (now() - ls.last_beat_at)) * 1000)::int + 2000),
-      coalesce(ls.duration_ms, 600000) * 5),
+      coalesce(ls.duration_ms, 600000) * 5,
+      (extract(epoch from (now() - ls.started_at)) * 1000)::int + 2000),
     last_beat_at = now()
   where ls.id = p_session and ls.visitor = p_visitor and ls.link_id = lid
     and ls.last_beat_at > now() - interval '30 minutes'
@@ -136,19 +155,30 @@ begin
   select owner_id into o from tracks where id = p_track;
   if uid is not null and uid = o then return false; end if;
   select label into src from share_links where id = lid;
-  who := app.viewer_name();
+  who := app.viewer_name(p_track);
   if p_kind = 'download' then
     if not exists (
       select 1 from tracks t left join share_links l on l.id = lid left join projects p on p.id = l.project_id
       where t.id = p_track and (t.allow_download or coalesce(p.allow_download, false))) then raise exception 'not allowed'; end if;
+    -- Un téléchargement compté par visiteur et par morceau et par heure ; 60 par lien et par heure au plus.
+    if exists (select 1 from interactions where track_id = p_track and visitor = p_visitor and kind = 'download' and created_at > now() - interval '1 hour')
+       or (select count(*) from interactions where link_id = lid and kind = 'download' and created_at > now() - interval '1 hour') >= 60 then
+      return false;
+    end if;
     insert into interactions (owner_id, track_id, link_id, listener_id, visitor, kind) values (o, p_track, lid, uid, p_visitor, 'download');
-    insert into notifications (owner_id, kind, track_id, actor, source) values (o, 'download', p_track, who, src);
+    if not exists (select 1 from notifications where owner_id = o and kind = 'download' and track_id = p_track
+                   and source is not distinct from src and read_at is null and created_at > now() - interval '10 minutes') then
+      insert into notifications (owner_id, kind, track_id, actor, source) values (o, 'download', p_track, who, src);
+    end if;
     return true;
   elsif p_kind = 'favorite' then
     if uid is null then raise exception 'login required'; end if;
     insert into interactions (owner_id, track_id, link_id, listener_id, visitor, kind) values (o, p_track, lid, uid, p_visitor, 'favorite')
       on conflict do nothing;
-    if found then insert into notifications (owner_id, kind, track_id, actor, source) values (o, 'favorite', p_track, who, src); end if;
+    -- Une seule notification de favori par auditeur et par morceau, même s'il le retire puis le remet.
+    if found and not exists (select 1 from notifications where owner_id = o and kind = 'favorite' and track_id = p_track and actor_id = uid) then
+      insert into notifications (owner_id, kind, track_id, actor, actor_id, source) values (o, 'favorite', p_track, who, uid, src);
+    end if;
     return true;
   elsif p_kind = 'unfavorite' then
     if uid is null then raise exception 'login required'; end if;
@@ -168,7 +198,7 @@ $$;
 grant execute on function app.record_view(text), app.listen_start(uuid, text), app.listen_beat(uuid, text, int),
   app.interact(uuid, text, text), app.my_favorites(), app.current_link() to sonikc_app;
 revoke all on function app.record_view(text), app.listen_start(uuid, text), app.listen_beat(uuid, text, int),
-  app.interact(uuid, text, text), app.my_favorites(), app.viewer_name() from public;
+  app.interact(uuid, text, text), app.my_favorites(), app.viewer_name(uuid), app.current_link() from public;
 
 grant select on link_views, listen_sessions, interactions, notifications to sonikc_app;
 grant update (read_at) on notifications to sonikc_app;

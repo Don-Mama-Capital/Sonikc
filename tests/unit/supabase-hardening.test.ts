@@ -34,6 +34,14 @@ describe('Base façon Supabase', () => {
         expect(noRls).toEqual([]);
         const [{ ok }] = await s`select has_function_privilege('anon', 'app.enqueue_job(text, uuid)', 'execute') as ok`;
         expect(ok).toBe(false);
+        // Fonctions de partage et de suivi : appelables par l'app seule.
+        const fns = ['app.link_grants()', 'app.level_ok(text, uuid, uuid)', 'app.viewer_invited(uuid, uuid)', 'app.listen_start(uuid, text)',
+          'app.listen_beat(uuid, text, integer)', 'app.interact(uuid, text, text)', 'app.record_view(text)', 'app.viewer_name(uuid)'];
+        for (const f of fns) {
+          const [{ anon, app }] = await s`select has_function_privilege('anon', ${f}, 'execute') as anon, has_function_privilege('sonikc_app', ${f}, 'execute') as app`;
+          expect({ f, anon }).toEqual({ f, anon: false });
+          if (f !== 'app.viewer_name(uuid)') expect({ f, app }).toEqual({ f, app: true });
+        }
         // Une table créée plus tard n'hérite plus des droits publics.
         await s`create table later_table (id int)`;
         const [{ later }] = await s`select has_table_privilege('anon', 'later_table', 'select') as later`;

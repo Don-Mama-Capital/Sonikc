@@ -98,8 +98,8 @@ export function SharePanel({ kind, id, onClose }: { kind: 'project' | 'track'; i
         <form className="space-y-2" onSubmit={(e) => { e.preventDefault(); act(async () => { await api(base, { method: 'PATCH', body: { password } }); setPassword(''); }); }}>
           <label className="label" htmlFor={`pw-${id}`}>Mot de passe {s.hasPassword && <span className="normal-case text-ok">· actif</span>}</label>
           <div className="flex gap-2">
-            <input id={`pw-${id}`} type="password" minLength={4} className="input" placeholder={s.hasPassword ? 'Nouveau mot de passe' : 'Optionnel'} value={password} onChange={(e) => setPassword(e.target.value)} />
-            <button className="btn-ghost shrink-0" disabled={password.length < 4}>{s.hasPassword ? 'Changer' : 'Protéger'}</button>
+            <input id={`pw-${id}`} type="password" minLength={8} className="input" placeholder={s.hasPassword ? 'Nouveau mot de passe (8 caractères min.)' : 'Optionnel, 8 caractères min.'} value={password} onChange={(e) => setPassword(e.target.value)} />
+            <button className="btn-ghost shrink-0" disabled={password.length < 8}>{s.hasPassword ? 'Changer' : 'Protéger'}</button>
           </div>
           {s.hasPassword && (
             <button type="button" className="text-sm text-mute underline hover:text-text" onClick={() => act(() => api(base, { method: 'PATCH', body: { password: null } }))}>Retirer le mot de passe</button>
