@@ -35,3 +35,9 @@ Ajouté en plus, sans nouvelle feature : migration `0002` qui ferme l'accès des
 ### Côté Supabase (dès que les 3 secrets sont ajoutés)
 
 Le workflow « Supabase dev » (onglet Actions → Run workflow) : applique les migrations, vérifie qu'aucune table n'est lisible publiquement, crée le compartiment privé `audio`, puis fait un aller-retour de fichier (écriture, lecture signée, refus sans signature, suppression). Secrets attendus : `SUPABASE_DB_URL` (chaîne « Session pooler »), `SUPABASE_URL`, `SUPABASE_SECRET_KEY`.
+
+### Supabase dev — fait le 18/11/2026
+
+[Exécution réussie](https://github.com/Don-Mama-Capital/Sonikc/actions/runs/44362197782) : secrets bien formés, migrations appliquées sur `sonikc-dev`, aucune table lisible par `anon`/`authenticated`, RLS partout, compartiment privé `audio` créé, aller-retour de fichier OK (lecture signée, refus sans signature, suppression).
+
+Contrainte relevée : l'offre gratuite de Supabase plafonne chaque fichier à **50 Mo**. Un WAV 24 bits / 48 kHz de 4 min pèse environ 69 Mo et sera refusé en dev (message « fichier trop lourd »). À trancher à la mise en ligne (offre payante de Supabase ou autre stockage) — pas de changement de code d'ici là.
