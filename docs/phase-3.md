@@ -41,3 +41,17 @@
 | 1 | Un envoi programmé part à l'heure, à 1 min près | Test |
 | 2 | Une relance ne part pas si le contact a déjà écouté, cliqué, répondu ou s'est désinscrit | Test |
 | 3 | Programmation et relance annulables tant qu'elles ne sont pas parties | Test |
+
+## Résultats
+
+### Lot 3.1 — itération 1 : 5/5 au vert, lot gelé
+
+| # | Preuve |
+| --- | --- |
+| 1 | `tests/unit/contacts.test.ts` : 500 lignes (447 adresses, 50 doublons en majuscules, 3 lignes invalides, 10 contacts déjà présents) → 437 créés, 60 fusionnés, 3 signalés avec leur numéro de ligne ; nom existant conservé, tags réunis ; réimport = 0 création. Lecture CSV : `;`, guillemets, BOM, en-têtes français, sans en-tête |
+| 2 | Test : groupe « a écouté plus de 60 s » vide, puis le contact apparaît dès que son écoute dépasse 60 s, sans aucune action |
+| 3 | Test : 40 s (1) + écoute complète (3) + téléchargement (5) + enregistrement (5) = 14 ; dernière activité exacte ; activité anonyme non rattachée ; au-delà de 90 jours les écoutes ne comptent plus. Un compte connecté avec l'adresse du contact est reconnu |
+| 4 | Test : un autre compte ne voit, ne modifie, ne supprime aucun contact ni groupe ; la base refuse un membre ou un lien personnel rattaché au contact d'un autre |
+| 5 | `tests/e2e/contacts.spec.ts` à 375 px : import (2 ajoutés, 1 fusionné, 1 ignoré), recherche, groupe à règle par tag, fiche ; aucun défilement horizontal (capture `test-results/contacts-mobile.png`) |
+
+En plus : sur mobile, la barre de navigation devient un menu déroulant (elle débordait avec la nouvelle entrée « Contacts »).
