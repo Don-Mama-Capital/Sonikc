@@ -84,3 +84,23 @@
 | 7 | Chrome à 375 px : aucun défilement horizontal, lecture qui démarre (capture `test-results/share-mobile.png`) ; Lighthouse mobile de la page partagée : accessibilité 100 (SEO 60 voulu : page non indexée) |
 
 Précision apportée en cours de lot (sans changer les critères) : un morceau sans réglage propre « suit le projet » ; partagé seul, il reste privé. Sinon, partager un projet aurait affiché une page vide, puisque tous les morceaux sont privés par défaut.
+
+### Lot 2.2 — itération 1 : 6/6 au vert (relecture indépendante en fin de phase)
+
+| # | Preuve |
+| --- | --- |
+| 1 | `tests/unit/listening.test.ts` : 8 battements de 5 s simulés → 40 s à ± 5 s ; 60 s annoncées après 5 s réelles → au plus 7 s comptées ; battement d'un autre visiteur ignoré. `tests/e2e/listening.spec.ts` : écoute réelle dans Chrome, durée affichée au propriétaire = durée jouée à ± 5 s |
+| 2 | Test : même visiteur, même morceau, même lien → même session ; autre visiteur ou plus de 30 min → nouvelle. Chrome : rechargement puis relecture → toujours 1 écoute |
+| 3 | Test : écoutes et ouvertures du propriétaire non enregistrées |
+| 4 | Mention sur la page d'écoute (capture `test-results/listen-notice.png`) |
+| 5 | Test : source = nom du lien ; compte connecté nommé (nom d'artiste, sinon adresse) ; anonyme = identifiant aléatoire, aucune donnée personnelle |
+| 6 | Test : téléchargement refusé tant qu'il n'est pas autorisé, puis compté ; favori réservé aux comptes connectés, sans doublon, retirable. En plus : lien révoqué ou morceau non accordé → rien n'est enregistré |
+
+### Lot 2.3 — itération 1 : 4/4 au vert
+
+| # | Preuve |
+| --- | --- |
+| 1 | Test : écoutes, auditeurs uniques, temps total et moyen, écoutes complètes et détail par source égaux aux chiffres calculés directement en base ; un autre compte n'y a pas accès |
+| 2 | Test : 4 ouvertures (dont une en double ignorée) → 3 lectures → 2 au-delà de 30 s → 1 complète → 1 téléchargement |
+| 3 | Chrome, deux navigateurs : la cloche du propriétaire affiche l'écoute en moins de 10 s après le clic sur « Écouter » (interrogation toutes les 4 s) ; test : une notification par écoute, pas à la reprise |
+| 4 | Test + capture `test-results/stats.png` : écoutes récentes avec auditeur (ou « Anonyme »), source, date et durée |

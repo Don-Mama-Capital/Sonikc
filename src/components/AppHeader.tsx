@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { NotificationBell } from './NotificationBell';
 
 const NEXT = { auto: 'sharps', sharps: 'flats', flats: 'auto' } as const;
 const LABEL = { auto: 'Auto', sharps: '♯', flats: '♭' } as const;
@@ -25,6 +26,7 @@ export function AppHeader({ handle, notation }: { handle: string; notation: 'aut
           }}>
           {LABEL[notation]}
         </button>
+        <NotificationBell />
         <span className="hidden text-sm text-mute sm:inline" data-testid="me">@{handle}</span>
         <button className="shrink-0 text-sm text-mute underline hover:text-text" data-testid="logout"
           onClick={async () => { await fetch('/api/auth/logout', { method: 'POST' }); router.replace('/login'); router.refresh(); }}>

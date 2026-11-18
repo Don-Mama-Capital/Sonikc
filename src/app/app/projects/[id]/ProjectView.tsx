@@ -12,6 +12,7 @@ import { InlinePrompt } from '@/components/library/Prompt';
 import { usePlayer } from '@/components/player/PlayerProvider';
 import { useRefreshWhileProcessing } from '@/components/library/LibraryView';
 import { SharePanel } from '@/components/share/SharePanel';
+import { StatsPanel } from '@/components/share/StatsPanel';
 
 type Data = Awaited<ReturnType<typeof getProject>>;
 
@@ -50,6 +51,7 @@ export function ProjectView({ data, notation }: { data: Data; notation: Notation
         </button>
       </div>
       {sharing && <SharePanel kind="project" id={project.id} onClose={() => setSharing(false)} />}
+      <StatsPanel kind="project" id={project.id} />
       {renaming && (
         <InlinePrompt label="Nom du projet" initial={project.title} submitLabel="Renommer" onCancel={() => setRenaming(false)}
           onSubmit={async (title) => { await api(`/api/projects/${project.id}`, { method: 'PATCH', body: { title } }); setRenaming(false); router.refresh(); }} />

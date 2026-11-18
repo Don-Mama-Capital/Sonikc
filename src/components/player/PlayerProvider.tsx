@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useListenTracker } from './useListenTracker';
 
 export type QueueItem = {
   id: string; title: string; url: string; waveform: number[] | null; durationMs: number | null; subtitle?: string;
@@ -53,6 +54,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
     a.play().catch(() => setPlaying(false));
   }, [current]);
+
+  useListenTracker(audio, current);
 
   const playList = useCallback((items: QueueItem[], start = 0) => {
     if (!items.length) return;

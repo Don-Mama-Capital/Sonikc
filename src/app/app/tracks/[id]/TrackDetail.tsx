@@ -9,6 +9,7 @@ import { formatBytes, formatDuration } from '@/lib/format';
 import type { getTrack } from '@/lib/server/library';
 import { usePlayer } from '@/components/player/PlayerProvider';
 import { SharePanel } from '@/components/share/SharePanel';
+import { StatsPanel } from '@/components/share/StatsPanel';
 import { Waveform } from '@/components/player/Waveform';
 import { UploadZone } from '@/components/library/UploadZone';
 import { toQueue } from '@/components/library/TrackList';
@@ -50,6 +51,7 @@ export function TrackDetail({ data, notation }: { data: Data; notation: Notation
         <button className="btn-ghost shrink-0" data-testid="share" onClick={() => setSharing((v) => !v)}>Partager</button>
       </div>
       {sharing && <SharePanel kind="track" id={track.id} onClose={() => setSharing(false)} />}
+      <StatsPanel kind="track" id={track.id} />
       <Waveform peaks={track.version?.waveform ?? null} progress={progress} height={64}
         onSeek={isCurrent ? player.seek : undefined} />
 

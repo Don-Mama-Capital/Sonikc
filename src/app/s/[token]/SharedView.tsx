@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { formatKey } from '@/lib/audio/keys';
 import { formatBpm, formatDuration } from '@/lib/format';
 import { usePlayer, type QueueItem } from '@/components/player/PlayerProvider';
@@ -9,6 +10,17 @@ type View = NonNullable<Awaited<ReturnType<typeof loadShared>>>;
 
 export function SharedView({ token, view }: { token: string; view: View }) {
   const player = usePlayer();
+  const [fav, setFav] = useState<{ loggedIn: boolean; ids: string[] }>({ loggedIn: false, ids: [] });
+  useEffect(() => {
+    if (view.isOwner) return;
+    fetch(`/api/s/${token}/view`, { method: 'POST' }).then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setFav({ loggedIn: d.loggedIn, ids: d.favorites })).catch(() => {});
+  }, [token, view.isOwner]);
+  const toggleFav = async (trackId: string) => {
+    const on = !fav.ids.includes(trackId);
+    setFav((f) => ({ ...f, ids: on ? [...f.ids, trackId] : f.ids.filter((x) => x !== trackId) }));
+    await fetch(`/api/s/${token}/favorite`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ trackId, on }) }).catch(() => {});
+  };
   const visible = view.tracks.filter((t) => view.isOwner || !t.hiddenForListeners);
   const queue: QueueItem[] = visible.map((t) => ({
     id: t.id, title: t.title, url: t.audioUrl, waveform: t.waveform, durationMs: t.durationMs, subtitle: view.ownerName,
@@ -41,6 +53,13 @@ export function SharedView({ token, view }: { token: string; view: View }) {
                 {meta && <p className="text-xs text-mute">{meta}</p>}
               </div>
               <span className="shrink-0 font-mono text-xs text-mute">{formatDuration(t.durationMs)}</span>
+              {fav.loggedIn && (
+                <button className={`shrink-0 text-lg ${fav.ids.includes(t.id) ? 'text-accent' : 'text-mute hover:text-text'}`} data-testid="favorite"
+                  aria-pressed={fav.ids.includes(t.id)} aria-label={`${fav.ids.includes(t.id) ? 'Retirer des favoris' : 'Ajouter aux favoris'} : ${t.title}`}
+                  onClick={() => toggleFav(t.id)}>
+                  {fav.ids.includes(t.id) ? '♥' : '♡'}
+                </button>
+              )}
               {t.allowDownload && (
                 <a className="shrink-0 text-sm text-mute underline hover:text-text" href={`/api/s/${token}/download/${t.versionId}`} aria-label={`Télécharger ${t.title}`}>
                   Télécharger
