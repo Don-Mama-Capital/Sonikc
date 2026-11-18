@@ -8,7 +8,8 @@ import { kindSchema } from './sharing';
 
 const uuid = z.string().uuid();
 const MAX_RECIPIENTS = 2000;
-const subjectSchema = z.string().trim().min(1, 'Objet obligatoire.').max(150);
+// Objet sur une seule ligne : un retour à la ligne ne doit jamais atteindre les en-têtes de l'email.
+const subjectSchema = z.string().transform((s) => s.replace(/[\r\n\t]+/g, ' ').trim()).pipe(z.string().min(1, 'Objet obligatoire.').max(150));
 const bodySchema = z.string().trim().min(1, 'Message obligatoire.').max(5000);
 
 const inputSchema = z.object({
@@ -40,8 +41,10 @@ export async function createCampaign(userId: string, raw: unknown) {
     if (input.groupId) ids = await groupContactIds(tx, input.groupId);
     else if (input.contactIds?.length) ids = input.contactIds;
     const recipients = await tx<{ id: string; email: string }[]>`
-      select id, email from contacts where unsubscribed_at is null ${ids ? tx`and id = any(${ids}::uuid[])` : tx``}
-      order by created_at limit ${MAX_RECIPIENTS + 1}`;
+      select c.id, c.email from contacts c
+      where not exists (select 1 from email_suppressions x where x.owner_id = c.owner_id and x.email = c.email)
+        ${ids ? tx`and c.id = any(${ids}::uuid[])` : tx``}
+      order by c.created_at limit ${MAX_RECIPIENTS + 1}`;
     if (!recipients.length) throw new Invalid('Aucun destinataire : ajoute des contacts (les désinscrits sont exclus).');
     if (recipients.length > MAX_RECIPIENTS) throw new Invalid(`${MAX_RECIPIENTS} destinataires au plus par envoi.`);
 

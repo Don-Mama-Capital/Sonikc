@@ -15,7 +15,9 @@ export type Mail = {
 const fromWithName = (from: string, name?: string) => {
   if (!name) return from;
   const addr = /<([^>]+)>/.exec(from)?.[1] ?? from;
-  return `${name.replace(/["<>\r\n]/g, '').slice(0, 60)} <${addr}>`;
+  // Nom entre guillemets, sans caractère de contrôle : une virgule ou un « @ » ne peut pas fausser l'expéditeur.
+  const clean = name.replace(/[\u0000-\u001f\u007f"\\<>]/g, '').slice(0, 60);
+  return `"${clean}" <${addr}>`;
 };
 
 export class MailError extends Error {}

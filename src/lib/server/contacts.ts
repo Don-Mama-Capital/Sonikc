@@ -7,10 +7,12 @@ import { Invalid, NotFound } from './library';
 
 const uuid = z.string().uuid();
 const emailSchema = z.string().trim().toLowerCase().email().max(254);
-const nameSchema = z.string().trim().max(120).nullable().optional();
+// Aucun caractère de contrôle (retour à la ligne compris) : le nom peut finir dans l'objet d'un email.
+const nameSchema = z.string().transform((s) => s.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()).pipe(z.string().max(120)).nullable().optional();
 const tagsSchema = z.array(z.string()).max(30).optional();
 const MAX_IMPORT = 5000;
 const MAX_CONTACTS = 20000;
+const MAX_GROUPS = 50;
 
 export const ruleSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('listened_over'), seconds: z.number().int().min(1).max(3600), days: z.number().int().min(1).max(365).optional() }),
@@ -42,7 +44,9 @@ function ruleWhere(tx: Tx, r: Rule) {
 }
 
 const contactCols = (tx: Tx) => tx`
-  c.id, c.email, c.name, c.tags, c.unsubscribed_at is not null as unsubscribed, c.created_at as "createdAt",
+  c.id, c.email, c.name, c.tags,
+  exists (select 1 from email_suppressions x where x.owner_id = c.owner_id and x.email = c.email) as unsubscribed,
+  c.created_at as "createdAt",
   a.score, a.plays, a.last_activity_at as "lastActivityAt"`;
 
 export type ContactRow = { id: string; email: string; name: string | null; tags: string[]; unsubscribed: boolean; createdAt: Date; score: number; plays: number; lastActivityAt: Date | null };
@@ -131,7 +135,7 @@ export async function importContacts(userId: string, csv: unknown, extraTags: un
         as x(email text, name text, tags text[])
       on conflict (owner_id, email) do update set
         name = coalesce(contacts.name, excluded.name),
-        tags = (select coalesce(array_agg(distinct t), '{}') from unnest(contacts.tags || excluded.tags) t)
+        tags = coalesce((select (array_agg(distinct t order by t))[1:30] from unnest(contacts.tags || excluded.tags) t), '{}')
       returning (xmax = 0) as inserted` : [];
     const created = res.filter((r) => r.inserted).length;
     if (n + created > MAX_CONTACTS) throw new Invalid(`Limite atteinte : ${MAX_CONTACTS} contacts.`);
@@ -159,6 +163,8 @@ export async function createGroup(userId: string, input: { name?: unknown; rule?
   const name = z.string().trim().min(1).max(60).parse(input.name);
   const rule = input.rule == null ? null : ruleSchema.parse(input.rule);
   return withUser(userId, async (tx) => {
+    const [{ n }] = await tx<{ n: number }[]>`select count(*)::int as n from contact_groups`;
+    if (n >= MAX_GROUPS) throw new Invalid(`Limite atteinte : ${MAX_GROUPS} groupes.`);
     const [g] = await tx<{ id: string }[]>`insert into contact_groups (owner_id, name, rule) values (${userId}, ${name}, ${rule ? tx.json(rule as never) : null})
       on conflict (owner_id, name) do nothing returning id`;
     if (!g) throw new Invalid('Un groupe porte déjà ce nom.');

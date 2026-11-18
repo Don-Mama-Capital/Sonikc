@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { asService, withUser } from '@/lib/server/db';
 import { contactDetail, createContact, createGroup, deleteContact, importContacts, listContacts, listGroups, setGroupMembers, updateContact } from '@/lib/server/contacts';
 import { contactsFromCsv } from '@/lib/server/csv';
-import { createLink, updateShareSettings } from '@/lib/server/sharing';
+import { createLink, invite, updateShareSettings } from '@/lib/server/sharing';
 import { parseLinkToken } from '@/lib/server/share-token';
 import { interact, listenStart } from '@/lib/server/listening';
 import { saveLink } from '@/lib/server/saves';
@@ -69,11 +69,12 @@ describe('Lot 3.1 — contacts', () => {
     expect((await listGroups(u.id)).find((g) => g.id === groupId)).toMatchObject({ size: 1, description: 'A écouté plus de 60 s' });
   });
 
-  it('3. score et dernière activité exacts ; un compte connecté avec la même adresse est reconnu', async () => {
+  it('3. score et dernière activité exacts ; un invité connecté avec la même adresse est reconnu', async () => {
     const u = await makeUser();
     const trackId = await readyTrack(u.id);
     const fanUser = await makeUser();
     const { id: contactId } = await createContact(u.id, { email: fanUser.email });
+    await invite(u.id, 'track', trackId, fanUser.email, 'Prod'); // son adresse est déjà connue du producteur
     const pub = await createLink(u.id, 'track', trackId, 'Public');
     const linkId = parseLinkToken(pub.url.split('/s/')[1])!;
     const ctx = { userId: fanUser.id, linkId, unlocked: false };
@@ -94,6 +95,30 @@ describe('Lot 3.1 — contacts', () => {
     // Les points plus vieux que 90 jours ne comptent plus.
     await asService((tx) => tx`update listen_sessions set started_at = now() - interval '100 days' where contact_id = ${contactId}`);
     expect((await listContacts(u.id, { q: fanUser.email })).contacts[0].score).toBe(10);
+  });
+
+  it('vie privée : sur un lien public, un compte connecté n’est pas rattaché à un contact importé avec son adresse', async () => {
+    const u = await makeUser();
+    const trackId = await readyTrack(u.id);
+    const listener = await makeUser();
+    const { id: contactId } = await createContact(u.id, { email: listener.email }); // adresse devinée ou importée
+    const pub = await createLink(u.id, 'track', trackId, 'Public');
+    await listenStart({ userId: listener.id, linkId: parseLinkToken(pub.url.split('/s/')[1])!, unlocked: false }, trackId, randomUUID());
+    expect((await contactDetail(u.id, contactId)).listens).toHaveLength(0);
+  });
+
+  it('robustesse : noms sans caractère de contrôle, 30 tags au plus après fusion, 50 groupes au plus, désinscription non modifiable', async () => {
+    const u = await makeUser();
+    const { id } = await createContact(u.id, { email: 'crlf@test.fr', name: 'Jean\r\nBcc: spam@evil.fr' });
+    expect((await contactDetail(u.id, id)).contact.name).toBe('Jean Bcc: spam@evil.fr');
+    const csv = ['email;nom;tags', `crlf@test.fr;"Autre\nNom";${Array.from({ length: 20 }, (_, i) => `a${i}`).join('|')}`,
+      `crlf@test.fr;;${Array.from({ length: 20 }, (_, i) => `b${i}`).join('|')}`].join('\n');
+    const r = await importContacts(u.id, csv);
+    expect(r.merged).toBe(2);
+    expect((await contactDetail(u.id, id)).contact.tags).toHaveLength(30);
+    for (let i = 0; i < 50; i++) await createGroup(u.id, { name: `G${i}` });
+    await expect(createGroup(u.id, { name: 'G50' })).rejects.toThrow('50 groupes');
+    await expect(withUser(u.id, (tx) => tx`update contacts set unsubscribed_at = null where id = ${id}`)).rejects.toThrow('permission denied');
   });
 
   it('4. chacun ne voit et ne modifie que ses contacts et groupes', async () => {

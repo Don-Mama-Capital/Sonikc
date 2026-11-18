@@ -14,10 +14,11 @@ import { renderCampaignEmail, personalize } from './email-render';
  */
 
 const MAX_ATTEMPTS = 3;
-const limits = () => ({
-  global: Number(process.env.MAIL_DAILY_LIMIT ?? 100),
-  perOwner: Number(process.env.MAIL_DAILY_LIMIT_PER_OWNER ?? process.env.MAIL_DAILY_LIMIT ?? 100),
-});
+// Par défaut, un producteur ne peut utiliser que la moitié du quota global : il n'épuise pas celui des autres.
+const limits = () => {
+  const global = Number(process.env.MAIL_DAILY_LIMIT ?? 100);
+  return { global, perOwner: Number(process.env.MAIL_DAILY_LIMIT_PER_OWNER ?? Math.max(1, Math.ceil(global / 2))) };
+};
 const base = () => env().APP_URL.replace(/\/$/, '');
 const tomorrow = () => { const d = new Date(); d.setUTCHours(24, 5, 0, 0); return d; };
 
@@ -53,21 +54,29 @@ export async function runCampaignSend(campaignId: string, step: 0 | 1, now = () 
     c = await loadCampaign(campaignId);
     if (!c || c.status === 'cancelled') return;
     const { global, perOwner } = limits();
-    const [{ all, mine }] = await asService((tx) => tx<{ all: number; mine: number }[]>`
-      select count(*)::int as all, count(*) filter (where owner_id = ${c!.ownerId})::int as mine
-      from email_sends where status = 'sent' and sent_at >= date_trunc('day', now() at time zone 'utc') at time zone 'utc'`);
-    if (all >= global || mine >= perOwner) {
+    // Réservation sous verrou : le plafond compte aussi les envois en cours, même avec plusieurs workers.
+    const claim = await asService(async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtext('sonikc:mail-quota'))`;
+      const [{ all, mine }] = await tx<{ all: number; mine: number }[]>`
+        select count(*)::int as all, count(*) filter (where owner_id = ${c!.ownerId})::int as mine
+        from email_sends where (status = 'sent' and sent_at >= date_trunc('day', now() at time zone 'utc') at time zone 'utc')
+           or status = 'sending'`;
+      if (all >= global || mine >= perOwner) return { capped: true as const };
+      const [row] = await tx<{ id: string; email: string; contactId: string | null; linkId: string | null; attempts: number; contactName: string | null; unsubscribed: boolean }[]>`
+        update email_sends es set status = 'sending', attempts = attempts + 1, next_attempt_at = now()
+        from (select id from email_sends where campaign_id = ${campaignId} and step = ${step} and status = 'queued' and next_attempt_at <= now()
+              order by created_at, id limit 1 for update skip locked) pick
+        where es.id = pick.id
+        returning es.id, es.email, es.contact_id as "contactId", es.link_id as "linkId", es.attempts,
+          (select name from contacts where id = es.contact_id) as "contactName",
+          exists (select 1 from email_suppressions x where x.owner_id = es.owner_id and x.email = lower(es.email)) as unsubscribed`;
+      return { capped: false as const, row };
+    });
+    if (claim.capped) {
       await asService((tx) => enqueue(tx, 'campaign_send', { campaignId, step }, tomorrow()));
       return;
     }
-    const [s] = await asService((tx) => tx<{ id: string; email: string; contactId: string | null; linkId: string | null; attempts: number; contactName: string | null; unsubscribed: boolean }[]>`
-      update email_sends es set status = 'sending', attempts = attempts + 1, next_attempt_at = now()
-      from (select id from email_sends where campaign_id = ${campaignId} and step = ${step} and status = 'queued' and next_attempt_at <= now()
-            order by created_at, id limit 1 for update skip locked) pick
-      where es.id = pick.id
-      returning es.id, es.email, es.contact_id as "contactId", es.link_id as "linkId", es.attempts,
-        (select name from contacts where id = es.contact_id) as "contactName",
-        exists (select 1 from contacts ct where ct.owner_id = es.owner_id and ct.email = lower(es.email) and ct.unsubscribed_at is not null) as unsubscribed`);
+    const s = claim.row;
     if (!s) {
       const [next] = await asService((tx) => tx<{ at: Date }[]>`
         select min(next_attempt_at) as at from email_sends where campaign_id = ${campaignId} and step = ${step} and status = 'queued'`);
@@ -80,7 +89,8 @@ export async function runCampaignSend(campaignId: string, step: 0 | 1, now = () 
       continue;
     }
     const token = sendToken(s.id);
-    const subject = personalize(step === 1 ? c.followupSubject ?? c.subject : c.subject, s.contactName).slice(0, 150);
+    // Une seule ligne, quoi que contienne le nom du contact.
+    const subject = personalize(step === 1 ? c.followupSubject ?? c.subject : c.subject, s.contactName).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 150);
     const { text, html } = renderCampaignEmail({
       body: step === 1 ? c.followupBody ?? c.body : c.body,
       contactName: s.contactName, ownerName: c.ownerName, title: c.title, email: s.email,
@@ -126,9 +136,10 @@ export async function runFollowup(campaignId: string) {
   await asService((tx) => tx`
     insert into email_sends (owner_id, campaign_id, contact_id, email, step, link_id)
     select s0.owner_id, s0.campaign_id, s0.contact_id, s0.email, 1, s0.link_id
-    from email_sends s0 left join contacts ct on ct.id = s0.contact_id
+    from email_sends s0 join contacts ct on ct.id = s0.contact_id -- contact supprimé : pas de relance
     where s0.campaign_id = ${campaignId} and s0.step = 0 and s0.status = 'sent'
-      and s0.clicked_at is null and s0.replied_at is null and ct.unsubscribed_at is null
+      and s0.clicked_at is null and s0.replied_at is null
+      and not exists (select 1 from email_suppressions x where x.owner_id = s0.owner_id and x.email = lower(s0.email))
       and not exists (select 1 from listen_sessions ls where ls.link_id = s0.link_id
                       or (s0.contact_id is not null and ls.contact_id = s0.contact_id and ls.started_at >= s0.sent_at))
     on conflict do nothing`);

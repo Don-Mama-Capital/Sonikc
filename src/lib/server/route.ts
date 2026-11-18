@@ -1,3 +1,4 @@
+import { Invalid } from './library';
 import type { NextResponse } from 'next/server';
 import type { SessionUser } from './auth';
 import { apiUser, fail, json, sameOrigin } from './http';
@@ -25,4 +26,10 @@ export function route<P = Record<string, string>>(
   };
 }
 
-export const body = async (req: Request) => req.json().catch(() => ({})) as Promise<Record<string, unknown>>;
+const MAX_BODY = 6_000_000; // un import CSV de 5 Mo au plus, plus l'enveloppe JSON
+export const body = async (req: Request) => {
+  if (Number(req.headers.get('content-length') ?? 0) > MAX_BODY) throw new Invalid('Données trop volumineuses (6 Mo au plus).');
+  const text = await req.text();
+  if (text.length > MAX_BODY) throw new Invalid('Données trop volumineuses (6 Mo au plus).');
+  try { return JSON.parse(text || '{}') as Record<string, unknown>; } catch { return {}; }
+};

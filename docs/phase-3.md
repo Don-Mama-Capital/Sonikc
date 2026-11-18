@@ -74,3 +74,32 @@ En plus : sur mobile, la barre de navigation devient un menu déroulant (elle d�
 | 1 | Test : programmé dans 2,5 s → rien avant, parti après, moins d'une minute d'écart (le worker vérifie la file chaque seconde) |
 | 2 | Test sur 5 destinataires : écouté, cliqué, répondu, désinscrit, rien → seule la 5e personne reçoit la relance, personnalisée ; relance programmée à J+3 |
 | 3 | Test : envoi programmé annulé → rien ne part, envois marqués « annulé » ; une campagne déjà partie ne s'annule plus ; relance annulée → rien ne part |
+
+## Relecture de sécurité indépendante (fin de phase)
+
+Un agent qui n'avait pas écrit le code a relu en lecture seule les migrations 0007 et 0008, les contacts, l'emailing, le worker et les liens publics des emails. Il a prouvé ses constats par des tests temporaires (hors du dépôt).
+
+| Domaine | Verdict initial | Après correction |
+| --- | --- | --- |
+| Isolation entre producteurs | Vert | Vert |
+| Vie privée (rattachement par email) | Rouge | Vert |
+| Liens publics des emails | Vert | Vert |
+| Envoi (injection, abus, plafonds, doublons) | Rouge | Vert |
+| Groupes à règle | À surveiller | Vert |
+| Import CSV | À surveiller | Vert |
+| Droits SQL | Vert | Vert (durcis) |
+
+Itération 2 des lots 3.1 à 3.3 (migration `0009_phase3_hardening.sql`, les migrations déjà appliquées à `sonikc-dev` ne sont pas modifiées). Chaque correction a son test :
+
+1. **Haute — réécrire à un désinscrit** en supprimant puis recréant le contact : liste d'exclusion définitive par producteur, non effaçable par lui ; le producteur ne peut plus modifier la désinscription d'un contact.
+2. **Moyenne — contact supprimé qui reçoit encore** (et sa relance) : ses envois en file passent en « non envoyé », pas de relance sans contact.
+3. **Moyenne — découvrir l'adresse d'un « Auditeur connecté »** en important des adresses devinées : le rattachement par adresse ne vaut plus que pour une personne invitée (dont le producteur connaît déjà l'adresse).
+4. Basse — retours à la ligne dans l'objet ou le nom d'un contact : supprimés à l'écriture et à l'envoi ; refusés par la base.
+5. Basse — plafond dépassable avec plusieurs envois en parallèle : réservation sous verrou, envois en cours comptés ; un producteur ne peut plus utiliser que la moitié du quota global par défaut.
+6. Basse — nom d'expéditeur : désormais entre guillemets et nettoyé.
+7. Basse — groupes sans limite : 50 par compte.
+8. Basse — réimport bloqué au-delà de 30 tags : fusion plafonnée à 30 ; corps des requêtes limité à 6 Mo.
+9. Info — invitations actives après annulation : l'annulation retire les invitations et les liens personnels jamais envoyés.
+10. Info — droits trop larges : rôle `sonikc_public` dédié aux liens des emails (il ne peut qu'enregistrer ouverture, clic, désinscription) ; mise à jour des campagnes limitée à l'annulation de la relance.
+
+Après correction : 141 tests et 17 parcours dans Chrome au vert.

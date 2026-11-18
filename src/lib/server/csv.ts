@@ -54,7 +54,8 @@ export function contactsFromCsv(text: string): { contacts: ParsedContact[]; inva
     let name: string | null = [iName >= 0 ? r[iName] : '', iLast >= 0 ? r[iLast] : ''].filter(Boolean).join(' ').trim() || null;
     if (!hasHeader && name === null) name = r.filter((_, j) => j !== iEmail).find((c) => c && !c.includes('@')) ?? null;
     const tags = iTags >= 0 ? splitTags(r[iTags] ?? '') : [];
-    contacts.push({ line, email, name: name ? name.slice(0, 120) : null, tags });
+    name = name ? name.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || null : null;
+    contacts.push({ line, email, name, tags });
   });
   return { contacts, invalid };
 }

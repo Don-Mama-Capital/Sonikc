@@ -2,8 +2,9 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { asService } from '@/lib/server/db';
-import { createContact, listContacts } from '@/lib/server/contacts';
+import { asService, withUser } from '@/lib/server/db';
+import { runCampaignSend } from '@/lib/server/campaign-send';
+import { createContact, deleteContact, importContacts, listContacts } from '@/lib/server/contacts';
 import { campaignDetail, cancelCampaign, cancelFollowup, createCampaign, markReplied } from '@/lib/server/campaigns';
 import { emailEvent } from '@/lib/server/email-events';
 import { parseSendToken } from '@/lib/server/email-token';
@@ -56,7 +57,7 @@ describe('Lot 3.2 — emailing', () => {
     expect(a[0].subject).toBe('Nouveau beat pour Contact');
     expect(a[0].text).toContain('Salut Contact,');
     expect(a[0].replyTo).toBe(s.owner.email);
-    expect(a[0].from).toMatch(/via Sonikc </);
+    expect(a[0].from).toMatch(/via Sonikc" </);
     expect(tokenIn(a[0], 'c')).not.toBe(tokenIn(b[0], 'c'));
     const click = await emailEvent(tokenIn(a[0], 'c'), 'click');
     const r = await resolveLink(click.ok ? click.sharePath!.split('/s/')[1] : '', null, undefined);
@@ -164,6 +165,74 @@ describe('Lot 3.2 — emailing', () => {
     await expect(cancelCampaign(other.id, c.id)).rejects.toThrow();
     await expect(createCampaign(other.id, base(s))).rejects.toThrow();
     await expect(createCampaign(other.id, { ...base(s), id: s.trackId, contactIds: [s.contacts[0].id] })).rejects.toThrow();
+  });
+});
+
+describe('Corrections de la relecture (phase 3, itération 2)', () => {
+  it('désinscription définitive : survit à la suppression, à la recréation et à la réimportation du contact', async () => {
+    const s = await setup(1);
+    await createCampaign(s.owner.id, base(s));
+    await drain();
+    const [m] = await mails(s.contacts[0].email);
+    await emailEvent(tokenIn(m, 'u'), 'unsubscribe');
+    await deleteContact(s.owner.id, s.contacts[0].id);
+    await createContact(s.owner.id, { email: s.contacts[0].email.toUpperCase(), name: 'Revenu' });
+    await importContacts(s.owner.id, `email\n${s.contacts[0].email}`);
+    expect((await listContacts(s.owner.id, { q: s.contacts[0].email })).contacts[0].unsubscribed).toBe(true);
+    await expect(createCampaign(s.owner.id, base(s))).rejects.toThrow('Aucun destinataire');
+    expect(await mails(s.contacts[0].email)).toHaveLength(1);
+  });
+
+  it('contact supprimé : rien de ce qui est en file ne part, et pas de relance', async () => {
+    const s = await setup(2);
+    const c = await createCampaign(s.owner.id, base(s, { scheduledAt: new Date(Date.now() + 3600_000).toISOString() }));
+    await deleteContact(s.owner.id, s.contacts[0].id);
+    await asService((tx) => tx`update jobs set run_after = now() where kind = 'campaign_send' and payload->>'campaignId' = ${c.id}`);
+    await asService((tx) => tx`update campaigns set scheduled_at = now() where id = ${c.id}`);
+    await drain();
+    expect(await mails(s.contacts[0].email)).toHaveLength(0);
+    expect(await mails(s.contacts[1].email)).toHaveLength(1);
+    const f = await setup(1);
+    const fc = await createCampaign(f.owner.id, base(f, { followup: { days: 1, subject: 'R', body: 'R' } }));
+    await drain();
+    await deleteContact(f.owner.id, f.contacts[0].id);
+    await asService((tx) => tx`update jobs set run_after = now() where kind = 'campaign_followup' and payload->>'campaignId' = ${fc.id}`);
+    await drain();
+    expect(await mails(f.contacts[0].email)).toHaveLength(1);
+  });
+
+  it('objet sur une seule ligne, expéditeur entre guillemets', async () => {
+    const s = await setup(1);
+    await createCampaign(s.owner.id, base(s, { subject: 'Salut\r\nBcc: spam@evil.fr {nom}' }));
+    await drain();
+    const [m] = await mails(s.contacts[0].email);
+    expect(m.subject).toBe('Salut Bcc: spam@evil.fr Contact 0');
+    expect(m.from).toMatch(/^"[^"\r\n]+ via Sonikc" <[^>]+>$/);
+  });
+
+  it('plafond respecté même avec plusieurs envois en parallèle', async () => {
+    const s = await setup(8);
+    process.env.MAIL_DAILY_LIMIT_PER_OWNER = '5';
+    try {
+      const ids = [];
+      for (let i = 0; i < 4; i++) ids.push((await createCampaign(s.owner.id, base(s, { contactIds: s.contacts.slice(i * 2, i * 2 + 2).map((c) => c.id) }))).id);
+      await Promise.all(ids.map((id) => runCampaignSend(id, 0)));
+      const [{ n }] = await asService((tx) => tx<{ n: number }[]>`select count(*)::int as n from email_sends where owner_id = ${s.owner.id} and status = 'sent'`);
+      expect(n).toBe(5);
+    } finally { delete process.env.MAIL_DAILY_LIMIT_PER_OWNER; }
+  });
+
+  it('annulation : invitations et liens personnels retirés ; droits restreints du producteur', async () => {
+    const s = await setup(1, 'invite');
+    const c = await createCampaign(s.owner.id, base(s, { scheduledAt: new Date(Date.now() + 3600_000).toISOString() }));
+    await cancelCampaign(s.owner.id, c.id);
+    const [inv] = await asService((tx) => tx<{ revoked: boolean }[]>`select revoked_at is not null as revoked from invites where track_id = ${s.trackId}`);
+    expect(inv.revoked).toBe(true);
+    const [l] = await asService((tx) => tx<{ revoked: boolean }[]>`select revoked_at is not null as revoked from share_links where contact_id = ${s.contacts[0].id}`);
+    expect(l.revoked).toBe(true);
+    const [{ id: sendId }] = await asService((tx) => tx<{ id: string }[]>`select id from email_sends where campaign_id = ${c.id}`);
+    await expect(withUser(s.owner.id, (tx) => tx`select app.email_event(${sendId}, 'unsubscribe')`)).rejects.toThrow('permission denied');
+    await expect(withUser(s.owner.id, (tx) => tx`update campaigns set status = 'scheduled' where id = ${c.id}`)).rejects.toThrow('permission denied');
   });
 });
 
