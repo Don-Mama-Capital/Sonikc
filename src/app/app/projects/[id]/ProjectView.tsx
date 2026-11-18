@@ -11,6 +11,8 @@ import { UploadZone } from '@/components/library/UploadZone';
 import { InlinePrompt } from '@/components/library/Prompt';
 import { usePlayer } from '@/components/player/PlayerProvider';
 import { useRefreshWhileProcessing } from '@/components/library/LibraryView';
+import { SharePanel } from '@/components/share/SharePanel';
+import { StatsPanel } from '@/components/share/StatsPanel';
 
 type Data = Awaited<ReturnType<typeof getProject>>;
 
@@ -19,6 +21,7 @@ export function ProjectView({ data, notation }: { data: Data; notation: Notation
   const router = useRouter();
   const player = usePlayer();
   const [renaming, setRenaming] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const [adding, setAdding] = useState(false);
   const [results, setResults] = useState<TrackRow[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -41,11 +44,14 @@ export function ProjectView({ data, notation }: { data: Data; notation: Notation
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="flex-1 text-2xl font-bold" data-testid="project-title">{project.pinned && <span className="mr-1 text-accent">●</span>}{project.title}</h1>
         <button className="btn-primary" data-testid="play-all" disabled={!queue.length} onClick={() => player.playList(queue)}>▶ Tout écouter</button>
+        <button className="btn-ghost" data-testid="share" onClick={() => setSharing((v) => !v)}>Partager</button>
         <button className="btn-ghost" onClick={() => setRenaming(true)}>Renommer</button>
         <button className="btn-ghost" onClick={() => act(() => api(`/api/projects/${project.id}`, { method: 'PATCH', body: { pinned: !project.pinned } }))}>
           {project.pinned ? 'Désépingler' : 'Épingler'}
         </button>
       </div>
+      {sharing && <SharePanel kind="project" id={project.id} onClose={() => setSharing(false)} />}
+      <StatsPanel kind="project" id={project.id} />
       {renaming && (
         <InlinePrompt label="Nom du projet" initial={project.title} submitLabel="Renommer" onCancel={() => setRenaming(false)}
           onSubmit={async (title) => { await api(`/api/projects/${project.id}`, { method: 'PATCH', body: { title } }); setRenaming(false); router.refresh(); }} />

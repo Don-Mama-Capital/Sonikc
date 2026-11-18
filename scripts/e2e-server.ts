@@ -3,6 +3,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { startPostgres } from './pg';
 import { migrate } from './migrate';
+import { startFakeGoogle } from './fake-google';
 
 /**
  * Environnement de recette : Postgres jetable, worker, et l'app compilée (`next start`).
@@ -14,7 +15,8 @@ await mkdir(root, { recursive: true });
 const pg = await startPostgres({ dir: path.join(root, 'pg'), port: 54410, persistent: false });
 await migrate(pg.url, () => {});
 
-Object.assign(process.env, {
+const google = await startFakeGoogle({ port: 54420 });
+Object.assign(process.env, google.env, {
   DATABASE_URL: pg.url,
   APP_SECRET: 'e2e-secret-e2e-secret-e2e-secret-e2e-secret',
   APP_URL: 'http://localhost:3100',

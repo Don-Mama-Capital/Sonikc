@@ -8,6 +8,8 @@ import { formatKey, type Notation } from '@/lib/audio/keys';
 import { formatBytes, formatDuration } from '@/lib/format';
 import type { getTrack } from '@/lib/server/library';
 import { usePlayer } from '@/components/player/PlayerProvider';
+import { SharePanel } from '@/components/share/SharePanel';
+import { StatsPanel } from '@/components/share/StatsPanel';
 import { Waveform } from '@/components/player/Waveform';
 import { UploadZone } from '@/components/library/UploadZone';
 import { toQueue } from '@/components/library/TrackList';
@@ -27,6 +29,7 @@ export function TrackDetail({ data, notation }: { data: Data; notation: Notation
 
   const isCurrent = player.current?.id === track.id;
   const progress = isCurrent && player.duration ? player.time / player.duration : 0;
+  const [sharing, setSharing] = useState(false);
   const act = async (fn: () => Promise<unknown>) => {
     setError(null);
     try { await fn(); router.refresh(); } catch (e) { setError((e as Error).message); }
@@ -41,11 +44,14 @@ export function TrackDetail({ data, notation }: { data: Data; notation: Notation
           onClick={() => (isCurrent ? player.toggle() : player.playList(toQueue([track])))}>
           {isCurrent && player.playing ? '❚❚' : '▶'}
         </button>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <h1 className="truncate text-2xl font-bold" data-testid="track-title">{track.title}</h1>
           <p className="text-sm text-mute">Version écoutée : {track.version?.label ?? '–'} · {formatDuration(track.version?.durationMs)}</p>
         </div>
+        <button className="btn-ghost shrink-0" data-testid="share" onClick={() => setSharing((v) => !v)}>Partager</button>
       </div>
+      {sharing && <SharePanel kind="track" id={track.id} onClose={() => setSharing(false)} />}
+      <StatsPanel kind="track" id={track.id} />
       <Waveform peaks={track.version?.waveform ?? null} progress={progress} height={64}
         onSeek={isCurrent ? player.seek : undefined} />
 

@@ -3,13 +3,13 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-export function LoginForm() {
+export function LoginForm({ next, google, error: initialError }: { next: string | null; google: boolean; error: string | null }) {
   const router = useRouter();
   const [step, setStep] = useState<'email' | 'code'>('email');
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError);
 
   async function post(url: string, body: unknown) {
     const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -29,7 +29,7 @@ export function LoginForm() {
   async function verify(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true); setError(null);
-    try { const r = await post('/api/auth/verify', { email, code }); router.replace(r.next); router.refresh(); }
+    try { const r = await post('/api/auth/verify', { email, code, next }); router.replace(r.next); router.refresh(); }
     catch (err) { setError((err as Error).message); setBusy(false); }
   }
 
@@ -45,6 +45,14 @@ export function LoginForm() {
         </div>
         {error && <p role="alert" className="text-sm text-bad">{error}</p>}
         <button className="btn-primary w-full" disabled={busy}>{busy ? 'Envoi…' : 'Recevoir un code'}</button>
+        {google && (
+          <>
+            <div className="flex items-center gap-3 text-xs text-mute" aria-hidden="true"><span className="h-px flex-1 bg-line" />ou<span className="h-px flex-1 bg-line" /></div>
+            <a className="btn-ghost w-full" href={`/api/auth/google/start${next ? `?next=${encodeURIComponent(next)}` : ''}`}>
+              Continuer avec Google
+            </a>
+          </>
+        )}
       </form>
     );
   }

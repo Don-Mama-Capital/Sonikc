@@ -36,3 +36,20 @@ export async function withUser<T>(userId: string, fn: (tx: Tx) => Promise<T>): P
 export async function asService<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   return sql().begin(fn) as Promise<T>;
 }
+
+export type ViewerCtx = { userId: string | null; linkId: string; unlocked: boolean };
+
+/**
+ * Transaction au nom d'un auditeur qui présente un lien de partage : même rôle `sonikc_app`,
+ * avec le lien et le déverrouillage éventuel posés pour les politiques RLS (app.link_grants).
+ */
+export async function withViewer<T>(v: ViewerCtx, fn: (tx: Tx) => Promise<T>): Promise<T> {
+  if (v.userId && !/^[0-9a-f-]{36}$/i.test(v.userId)) throw new Error('invalid user id');
+  if (!/^[0-9a-f-]{36}$/i.test(v.linkId)) throw new Error('invalid link id');
+  return sql().begin(async (tx) => {
+    await tx`select set_config('app.user_id', ${v.userId ?? ''}, true), set_config('app.link_id', ${v.linkId}, true),
+                    set_config('app.link_unlocked', ${v.unlocked ? '1' : ''}, true)`;
+    await tx`set local role sonikc_app`;
+    return fn(tx);
+  }) as Promise<T>;
+}

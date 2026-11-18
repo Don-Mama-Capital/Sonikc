@@ -9,7 +9,7 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       CHROME_PATH: /usr/bin/google-chrome
     steps:
@@ -18,8 +18,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # Binaire statique téléchargé depuis GitHub : apt-get a déjà mis 29 min à cause d'un miroir lent.
+      # Repli sur apt (sans paquets recommandés) si le téléchargement échoue.
       - name: ffmpeg
-        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+        timeout-minutes: 10
+        run: |
+          if curl -fsSL --retry 3 https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar -xJ -C "$RUNNER_TEMP"; then
+            echo "$RUNNER_TEMP/ffmpeg-master-latest-linux64-gpl/bin" >> "$GITHUB_PATH"
+          else
+            sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg
+          fi
+      - run: ffmpeg -version | head -1 && ffprobe -version | head -1
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
       - run: npx tsc --noEmit

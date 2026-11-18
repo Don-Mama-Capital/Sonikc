@@ -37,10 +37,15 @@ for (let i = 0; i < 60; i++) {
   await new Promise((r) => setTimeout(r, 500));
 }
 
+await call(`/api/share/track/${t.trackId}`, { method: 'PATCH', body: JSON.stringify({ visibility: 'public' }) });
+const link = await (await call(`/api/share/track/${t.trackId}/links`, { method: 'POST', body: JSON.stringify({ label: 'Audit' }) })).json();
+const sharedPath = new URL(link.url).pathname;
+
 const pages = [
   { name: 'connexion', url: '/login', auth: false },
   { name: 'bibliotheque', url: '/app', auth: true },
   { name: 'morceau', url: `/app/tracks/${t.trackId}`, auth: true },
+  { name: 'partage', url: sharedPath, auth: false },
 ];
 const chrome = await chromeLauncher.launch({ chromePath: process.env.CHROME_PATH ?? '/usr/bin/google-chrome', chromeFlags: ['--headless=new', '--no-sandbox'] });
 const out: Record<string, Record<string, number>> = {};
