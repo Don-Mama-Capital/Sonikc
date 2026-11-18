@@ -1,22 +1,47 @@
 name: Supabase dev
-# Lancement à la main (onglet Actions) ou à chaque fusion d'une migration sur main.
+# Prépare le projet Supabase « sonikc-dev » : migrations, verrous d'accès, stockage privé, test de fumée.
+# Se lance :
+# - sur une PR qui touche aux migrations ou à ce script (relançable depuis l'onglet Checks de la PR) ;
+# - à chaque fusion d'une migration sur main ;
+# - à la main (onglet Actions → Supabase dev → Run workflow), une fois ce fichier présent sur main.
+# Sans les 3 secrets, le job s'arrête proprement avec un avertissement au lieu d'échouer.
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'db/migrations/**'
+      - 'scripts/supabase-setup.ts'
+      - 'scripts/migrate.ts'
+      - 'src/lib/server/storage.ts'
+      - '.github/workflows/supabase-dev.yml'
   push:
     branches: [main]
     paths: ['db/migrations/**']
+concurrency:
+  group: supabase-dev
+  cancel-in-progress: false
 jobs:
   setup:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      HAS_SECRETS: ${{ secrets.SUPABASE_DB_URL != '' && secrets.SUPABASE_URL != '' && secrets.SUPABASE_SECRET_KEY != '' }}
     steps:
+      - name: Secrets manquants
+        if: env.HAS_SECRETS != 'true'
+        run: |
+          echo "::warning title=Supabase dev non lancé::Il manque au moins un des secrets SUPABASE_DB_URL, SUPABASE_URL, SUPABASE_SECRET_KEY (Settings → Secrets and variables → Actions)."
       - uses: actions/checkout@v4
+        if: env.HAS_SECRETS == 'true'
       - uses: actions/setup-node@v4
+        if: env.HAS_SECRETS == 'true'
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - if: env.HAS_SECRETS == 'true'
+        run: npm ci
       - name: Migrations, verrous d'accès, stockage privé
+        if: env.HAS_SECRETS == 'true'
         run: npx tsx scripts/supabase-setup.ts
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}

@@ -16,7 +16,37 @@ const SUPABASE_URL = need('SUPABASE_URL').replace(/\/$/, '');
 const SECRET = need('SUPABASE_SECRET_KEY');
 const BUCKET = process.env.SUPABASE_BUCKET ?? 'audio';
 
-await migrate(DATABASE_URL);
+// Contrôles de forme, avec des messages qui disent quoi corriger (les valeurs ne sont jamais affichées).
+const problems: string[] = [];
+if (/\[?YOUR-PASSWORD\]?/i.test(DATABASE_URL)) problems.push('SUPABASE_DB_URL contient encore « [YOUR-PASSWORD] » : remplace-le par le mot de passe de la base (sans crochets).');
+let dbHost = '';
+try {
+  const u = new URL(DATABASE_URL);
+  dbHost = u.hostname;
+  if (!/^postgres(ql)?:$/.test(u.protocol)) problems.push('SUPABASE_DB_URL doit commencer par postgresql://');
+  if (u.hostname.startsWith('db.') && u.hostname.endsWith('.supabase.co')) problems.push('SUPABASE_DB_URL est la connexion directe (db.….supabase.co), inaccessible depuis GitHub : prends la chaîne « Session pooler » (…pooler.supabase.com:5432).');
+  if (u.hostname.endsWith('pooler.supabase.com') && u.port === '6543') problems.push('SUPABASE_DB_URL est le « Transaction pooler » (port 6543) : prends le « Session pooler » (port 5432).');
+} catch {
+  problems.push('SUPABASE_DB_URL n’est pas une adresse valide. Si le mot de passe contient des caractères spéciaux (@ : / ? # %), réinitialise-le avec uniquement des lettres et des chiffres.');
+}
+if (!/^https:\/\/[a-z0-9]+\.supabase\.co$/.test(SUPABASE_URL)) problems.push('SUPABASE_URL doit avoir la forme https://xxxxxxxx.supabase.co (sans rien après).');
+if (SECRET.startsWith('sb_publishable_')) problems.push('SUPABASE_SECRET_KEY est la clé publique (sb_publishable_…) : il faut la clé secrète (sb_secret_…).');
+else if (!SECRET.startsWith('sb_secret_') && !SECRET.startsWith('eyJ')) problems.push('SUPABASE_SECRET_KEY ne ressemble pas à une clé secrète Supabase (attendu : sb_secret_…).');
+if (problems.length) {
+  for (const p of problems) console.error(`✗ ${p}`);
+  process.exit(1);
+}
+console.log(`0/4 secrets bien formés (base : ${dbHost})`);
+
+try {
+  await migrate(DATABASE_URL);
+} catch (e) {
+  const msg = String((e as Error).message ?? e);
+  if (/password authentication failed/i.test(msg)) console.error('✗ Mot de passe de la base refusé : vérifie le mot de passe dans SUPABASE_DB_URL (ou réinitialise-le dans Supabase).');
+  else if (/tenant or user not found/i.test(msg)) console.error('✗ Utilisateur inconnu du pooler : l’utilisateur doit être « postgres.<référence du projet> », copie la chaîne Session pooler telle quelle.');
+  else console.error(`✗ Connexion ou migration impossible : ${msg.slice(0, 300)}`);
+  process.exit(1);
+}
 console.log('1/4 migrations à jour');
 
 const sql = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
