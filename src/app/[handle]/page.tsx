@@ -2,6 +2,9 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { formatKey } from '@/lib/audio/keys';
 import { storefront } from '@/lib/server/storefront';
+import { paymentsEnabled } from '@/lib/server/stripe';
+import { currentUser } from '@/lib/server/session';
+import { COUNTRIES } from '@/config/vat';
 import { StoreView } from './StoreView';
 
 type Props = { params: Promise<{ handle: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> };
@@ -72,7 +75,8 @@ export default async function StorePage({ params, searchParams }: Props) {
         </div>
       </form>
 
-      <StoreView ownerName={profile.displayName || profile.handle} tracks={tracks} filtered={filtered} />
+      <StoreView ownerName={profile.displayName || profile.handle} tracks={tracks} filtered={filtered}
+        canBuy={paymentsEnabled()} countries={COUNTRIES} buyerEmail={(await currentUser())?.email ?? null} />
     </div>
   );
 }

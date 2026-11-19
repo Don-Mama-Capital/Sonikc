@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/client/api';
 import { TrackLicences } from './TrackLicences';
+import { TrackSplits } from './TrackSplits';
 import type { getShareSettings } from '@/lib/server/sharing';
 
 type Settings = Awaited<ReturnType<typeof getShareSettings>>;
@@ -56,6 +57,7 @@ export function SharePanel({ kind, id, onClose }: { kind: 'project' | 'track'; i
       </fieldset>
 
       {kind === 'track' && (vis === 'for_sale' || vis === 'inherit') && <TrackLicences trackId={id} inherited={vis === 'inherit'} />}
+      {kind === 'track' && (vis === 'for_sale' || vis === 'inherit') && <TrackSplits trackId={id} />}
       {kind === 'project' && vis === 'for_sale' && (
         <p className="text-xs text-mute">Les morceaux qui suivent ce projet sont en vente avec tes licences. Ajuste-les morceau par morceau depuis leur partage.</p>
       )}

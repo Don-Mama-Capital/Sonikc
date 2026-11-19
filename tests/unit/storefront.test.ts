@@ -10,8 +10,8 @@ import { makeUser } from './helpers';
 async function track(ownerId: string, title: string, bpm: number, keyPc: number, keyMode: 'major' | 'minor') {
   return asService(async (tx) => {
     const [t] = await tx<{ id: string }[]>`insert into tracks (owner_id, title, bpm, key_pc, key_mode, tags) values (${ownerId}, ${title}, ${bpm}, ${keyPc}, ${keyMode}, ${['trap']}) returning id`;
-    const [v] = await tx<{ id: string }[]>`insert into track_versions (track_id, owner_id, version_no, label, status, original_filename, original_key, preview_key, duration_ms)
-      values (${t.id}, ${ownerId}, 1, 'v1', 'ready', 'b.wav', ${`o/${t.id}`}, ${`p/${t.id}`}, 60000) returning id`;
+    const [v] = await tx<{ id: string }[]>`insert into track_versions (track_id, owner_id, version_no, label, status, original_filename, original_key, preview_key, duration_ms, format)
+      values (${t.id}, ${ownerId}, 1, 'v1', 'ready', 'b.wav', ${`o/${t.id}`}, ${`p/${t.id}`}, 60000, 'wav') returning id`;
     await tx`update tracks set current_version_id = ${v.id} where id = ${t.id}`;
     return { id: t.id, versionId: v.id };
   });

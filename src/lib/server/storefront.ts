@@ -8,6 +8,7 @@ import { hmac, safeEqualStr } from './crypto';
 /** Page publique (lot 4.1) et licences (lot 4.2). */
 
 const uuid = z.string().uuid();
+const LOSSLESS = new Set(['wav', 'flac', 'aiff', 'w64', 'caf']);
 const cents = z.number().int().min(100).max(10_000_000);
 
 // ───────── Modèles de licence (propriétaire) ─────────
@@ -94,26 +95,30 @@ export async function setTrackLicence(userId: string, trackId: string, templateI
 /** En vente : réglé sur le morceau, ou morceau sans réglage propre dans un projet en vente (sans mot de passe). */
 const forSaleExpr = (tx: Tx) => tx`(t.password_hash is null and (t.visibility = 'for_sale' or (t.visibility is null and exists (
   select 1 from project_tracks pt join projects p on p.id = pt.project_id
-  where pt.track_id = t.id and p.visibility = 'for_sale' and p.password_hash is null))))`;
+  where pt.track_id = t.id and p.deleted_at is null and p.visibility = 'for_sale' and p.password_hash is null))))`;
 
 export type Offer = Template & { finalPriceCents: number };
 
 /**
  * Licences proposées pour un morceau : modèles actifs non désactivés pour ce morceau ; aucune si l'exclusivité
- * est vendue ; l'exclusive masquée pendant qu'un autre paiement la réserve ; les stems ne sont pas encore livrables.
+ * est vendue ; l'exclusive masquée pendant qu'un autre paiement la réserve ; les stems ne sont pas encore livrables ;
+ * une licence WAV est masquée si le fichier d'origine est compressé.
  */
-export async function trackOffers(tx: Tx, trackId: string): Promise<Offer[]> {
-  const [t] = await tx<{ ownerId: string; forSale: boolean; soldAt: Date | null; reservedUntil: Date | null }[]>`
-    select t.owner_id as "ownerId", ${forSaleExpr(tx)} as "forSale", t.exclusive_sold_at as "soldAt", t.exclusive_reserved_until as "reservedUntil"
-    from tracks t where t.id = ${trackId}`;
+export async function trackOffers(tx: Tx, trackId: string, opts: { ignoreReservation?: boolean } = {}): Promise<Offer[]> {
+  const [t] = await tx<{ ownerId: string; forSale: boolean; soldAt: Date | null; reservedUntil: Date | null; format: string | null }[]>`
+    select t.owner_id as "ownerId", ${forSaleExpr(tx)} as "forSale", t.exclusive_sold_at as "soldAt", t.exclusive_reserved_until as "reservedUntil",
+           v.format
+    from tracks t left join track_versions v on v.id = t.current_version_id and v.status = 'ready' where t.id = ${trackId}`;
   if (!t || !t.forSale || t.soldAt) return [];
   const rows = await tx<(Template & { override: number | null; enabled: boolean | null })[]>`
     select ${tplCols(tx)}, tl.price_cents as override, tl.enabled
     from licence_templates lt left join track_licences tl on tl.template_id = lt.id and tl.track_id = ${trackId}
     where lt.owner_id = ${t.ownerId} and lt.active order by lt.position, lt.created_at`;
-  const reserved = t.reservedUntil && t.reservedUntil.getTime() > Date.now();
+  const reserved = !opts.ignoreReservation && t.reservedUntil && t.reservedUntil.getTime() > Date.now();
   return rows
-    .filter((r) => r.enabled !== false && !r.formats.includes('stems') && !(r.exclusive && reserved))
+    // WAV promis mais fichier d'origine compressé (MP3…) : la licence ne peut pas être livrée honnêtement, elle est masquée.
+    .filter((r) => r.enabled !== false && !r.formats.includes('stems') && !(r.exclusive && reserved)
+      && !(r.formats.includes('wav') && !LOSSLESS.has(t.format ?? '')))
     .map(({ override, enabled: _e, ...r }) => ({ ...r, finalPriceCents: override ?? r.priceCents }));
 }
 

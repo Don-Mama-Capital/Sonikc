@@ -7,9 +7,9 @@ test('page publique : seuls les morceaux publics, filtres, licences lisibles, é
   await expect(page.getByTestId('track-row').filter({ hasText: 'BPM' })).toHaveCount(3, { timeout: 90_000 });
   const lib = await (await page.request.get('/api/library')).json();
   const id = Object.fromEntries(lib.tracks.map((t: { title: string; id: string }) => [t.title, t.id]));
-  await page.request.patch(`/api/share/track/${id['ref02 90 Cmaj']}`, { data: { visibility: 'for_sale' } });
+  await page.request.patch(`/api/share/track/${id['ref01 140 Amin']}`, { data: { visibility: 'for_sale' } });
   await page.request.patch(`/api/share/track/${id['ref06 100 Gmin']}`, { data: { visibility: 'public' } });
-  // ref01 reste privé.
+  // ref02 reste privé. ref01 est un WAV : les licences WAV peuvent être livrées.
 
   // Réglages : profil et une licence modifiée depuis « Ma page ».
   await page.goto('/app/boutique');
@@ -28,10 +28,10 @@ test('page publique : seuls les morceaux publics, filtres, licences lisibles, é
   await expect(visitor.getByTestId('store-bio')).toHaveText('Beats trap à Paris');
   await expect(visitor.getByRole('link', { name: 'Instagram' })).toHaveAttribute('href', 'https://instagram.com/test');
   await expect(visitor.getByTestId('store-track')).toHaveCount(2);
-  await expect(visitor.getByTestId('store-tracks')).not.toContainText('ref01');
+  await expect(visitor.getByTestId('store-tracks')).not.toContainText('ref02');
   // 25 € HT + 20 % = 30 € TTC (France).
-  await expect(visitor.getByTestId('store-track').filter({ hasText: 'ref02' }).getByTestId('store-price')).toContainText('30,00');
-  await visitor.getByTestId('store-track').filter({ hasText: 'ref02' }).getByText('Voir les licences').click();
+  await expect(visitor.getByTestId('store-track').filter({ hasText: 'ref01' }).getByTestId('store-price')).toContainText('30,00');
+  await visitor.getByTestId('store-track').filter({ hasText: 'ref01' }).getByText('Voir les licences').click();
   const licences = visitor.getByTestId('licence');
   await expect(licences).toHaveCount(3);
   await expect(licences.first()).toContainText('Fichiers : MP3');
@@ -41,11 +41,11 @@ test('page publique : seuls les morceaux publics, filtres, licences lisibles, é
   await visitor.screenshot({ path: 'test-results/store-mobile.png', fullPage: true });
 
   // Filtres (formulaire sans JavaScript côté serveur).
-  await visitor.getByLabel('BPM min').fill('95');
+  await visitor.getByLabel('BPM max').fill('120');
   await visitor.getByRole('button', { name: 'Filtrer' }).click();
   await expect(visitor.getByTestId('store-track')).toHaveCount(1);
   await expect(visitor.getByTestId('store-track')).toContainText('ref06');
-  await visitor.getByLabel('Tonalité').selectOption({ label: 'C maj' });
+  await visitor.getByLabel('Tonalité').selectOption({ label: 'A min' });
   await visitor.getByRole('button', { name: 'Filtrer' }).click();
   await expect(visitor.getByTestId('store-empty')).toBeVisible();
   await visitor.getByRole('link', { name: 'Effacer' }).click();
@@ -57,9 +57,9 @@ test('page publique : seuls les morceaux publics, filtres, licences lisibles, é
 
   // Licence désactivée pour ce morceau : masquée.
   const tpls = await (await page.request.get('/api/licences')).json();
-  await page.request.put(`/api/tracks/${id['ref02 90 Cmaj']}/licences/${tpls[2].id}`, { data: { enabled: false } });
+  await page.request.put(`/api/tracks/${id['ref01 140 Amin']}/licences/${tpls[2].id}`, { data: { enabled: false } });
   await visitor.reload();
-  await visitor.getByTestId('store-track').filter({ hasText: 'ref02' }).getByText('Voir les licences').click();
+  await visitor.getByTestId('store-track').filter({ hasText: 'ref01' }).getByText('Voir les licences').click();
   await expect(visitor.getByTestId('licence')).toHaveCount(2);
 
   // Identifiant inconnu : page introuvable.

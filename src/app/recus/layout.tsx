@@ -20,6 +20,7 @@ export default async function ReceivedLayout({ children }: { children: React.Rea
           <nav className="flex min-w-0 flex-1 gap-3 text-sm text-mute">
             {user.handle && <Link href="/app" className="hover:text-text">Bibliothèque</Link>}
             <Link href="/recus" className="text-text">Reçus</Link>
+            <Link href="/achats" className="hover:text-text">Achats</Link>
           </nav>
           <LogoutLink />
         </div>
