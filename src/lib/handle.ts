@@ -7,6 +7,9 @@ const RESERVED = new Set([
   'admin', 'api', 'app', 'auth', 'login', 'logout', 'onboarding', 'settings', 'help', 'about', 'pricing',
   'terms', 'privacy', 'legal', 'support', 'contact', 'sonikc', 'official', 'staff', 'root', 'www', 'mail',
   'static', 'assets', 'files', 'upload', 'uploads', 'dev', 'null', 'undefined', 'browse', 'search', 'blog',
+  // Pages de Sonikc à la racine (phases 2 à 5).
+  'recus', 'achats', 'checkout', 'paiement', 'order', 'orders', 'commande', 'commandes', 'facture', 'invoice',
+  'certificat', 'certificats', 'tarifs', 'offres', 'cgv', 'cgu', 'mentions', 'licence', 'licences', 'stripe',
 ]);
 
 export function normalizeHandle(input: string) {

@@ -2,16 +2,18 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/client/api';
+import { TrackLicences } from './TrackLicences';
 import type { getShareSettings } from '@/lib/server/sharing';
 
 type Settings = Awaited<ReturnType<typeof getShareSettings>>;
-type Vis = 'inherit' | 'private' | 'invite' | 'public';
+type Vis = 'inherit' | 'private' | 'invite' | 'public' | 'for_sale';
 
 const INHERIT = { value: 'inherit' as const, label: 'Suit le projet', help: 'Écoutable dans les projets partagés ; privé s’il est partagé seul.' };
 const LEVELS: { value: Vis; label: string; help: string }[] = [
   { value: 'private', label: 'Privé', help: 'Toi seul. Les liens existants ne fonctionnent pas.' },
   { value: 'invite', label: 'Sur invitation', help: 'Seules les adresses invitées, après connexion.' },
-  { value: 'public', label: 'Public', help: 'Toute personne qui a un lien. Mot de passe possible.' },
+  { value: 'public', label: 'Public', help: 'Toute personne qui a un lien, et ta page publique. Mot de passe possible.' },
+  { value: 'for_sale', label: 'En vente', help: 'Comme Public, avec tes licences à l’achat sur ta page publique.' },
 ];
 
 /** Réglages de partage d'un projet ou d'un morceau : niveau, liens, invitations, mot de passe, téléchargement. */
@@ -31,7 +33,7 @@ export function SharePanel({ kind, id, onClose }: { kind: 'project' | 'track'; i
     try { await fn(); await load(); } catch (e) { setError((e as Error).message); }
   };
   if (!s) return <section className="card p-4 text-sm text-mute">Chargement du partage…</section>;
-  const vis = (s.visibility === 'for_sale' ? 'public' : s.visibility) as Vis;
+  const vis = s.visibility as Vis;
   const levels = kind === 'track' ? [INHERIT, ...LEVELS.map((l) => (l.value === 'private' ? { ...l, help: 'Toi seul, même dans un projet partagé.' } : l))] : LEVELS;
   const activeLinks = s.links.filter((l) => !l.revokedAt);
 
@@ -52,6 +54,11 @@ export function SharePanel({ kind, id, onClose }: { kind: 'project' | 'track'; i
           </label>
         ))}
       </fieldset>
+
+      {kind === 'track' && (vis === 'for_sale' || vis === 'inherit') && <TrackLicences trackId={id} inherited={vis === 'inherit'} />}
+      {kind === 'project' && vis === 'for_sale' && (
+        <p className="text-xs text-mute">Les morceaux qui suivent ce projet sont en vente avec tes licences. Ajuste-les morceau par morceau depuis leur partage.</p>
+      )}
 
       {vis === 'invite' && (
         <div className="space-y-2">

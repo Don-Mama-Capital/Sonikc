@@ -1,3 +1,4 @@
+import { listTemplates } from './storefront';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { withUser, type Tx } from './db';
@@ -11,10 +12,10 @@ import { Invalid, NotFound } from './library';
 export type ShareKind = 'project' | 'track';
 export const kindSchema = z.enum(['project', 'track']);
 const uuid = z.string().uuid();
-// « En vente » existe en base mais n'est proposé qu'avec la vente (phase 4) : pas de fonction annoncée avant d'exister.
-const visibilitySchema = z.enum(['private', 'invite', 'public']);
+// « En vente » (phase 4) : comme Public, avec en plus les licences proposées sur la page publique.
+const visibilitySchema = z.enum(['private', 'invite', 'public', 'for_sale']);
 // Un morceau peut aussi « suivre le projet » (null en base) : visible dans un projet partagé, privé seul.
-const trackVisibilitySchema = z.enum(['inherit', 'private', 'invite', 'public']);
+const trackVisibilitySchema = z.enum(['inherit', 'private', 'invite', 'public', 'for_sale']);
 const labelSchema = z.string().trim().min(1).max(60);
 const emailSchema = z.string().trim().toLowerCase().email().max(254);
 const passwordSchema = z.string().min(8, 'Mot de passe : 8 caractères minimum.').max(100);
@@ -78,6 +79,8 @@ export async function updateShareSettings(userId: string, kind: ShareKind, id: s
     if (password !== undefined) await tx`update ${t} set password_hash = ${password} where id = ${id}`;
     if (allowDownload !== undefined) await tx`update ${t} set allow_download = ${allowDownload} where id = ${id}`;
   });
+  // Mettre en vente sans avoir encore ouvert « Licences » : les licences par défaut sont créées pour que la vente marche tout de suite.
+  if (visibility === 'for_sale') await listTemplates(userId);
   return getShareSettings(userId, kind, id);
 }
 

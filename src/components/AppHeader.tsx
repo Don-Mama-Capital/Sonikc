@@ -13,6 +13,7 @@ const LINKS = [
   { href: '/app', label: 'Bibliothèque' },
   { href: '/app/contacts', label: 'Contacts' },
   { href: '/app/campaigns', label: 'Envois' },
+  { href: '/app/boutique', label: 'Ma page' },
   { href: '/recus', label: 'Reçus' },
   { href: '/app/trash', label: 'Corbeille' },
 ];
