@@ -2,7 +2,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { inflateSync } from 'node:zlib';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { asService, withUser } from '@/lib/server/db';
 import { updateShareSettings } from '@/lib/server/sharing';
 import { listTemplates } from '@/lib/server/storefront';
@@ -10,11 +10,15 @@ import { store } from '@/lib/server/storage';
 import { sha256 } from '@/lib/server/crypto';
 import {
   commissionCents, computeShares, confirmPayment, handleWebhook, listPurchases, listSales, orderFile, orderView, parseOrderToken,
-  refreshAccount, refundBySeller, runTransfers, setSplits, startCheckout, startOnboarding,
+  refreshAccount, refundBySeller, runTransfers, setSplits, startCheckout, startOnboarding, sweepPayments,
 } from '@/lib/server/commerce';
 import { OFFERS } from '@/config/offers';
 import { startFakeStripe, type FakeStripe } from '../../scripts/fake-stripe';
 import { drain } from '../../worker/index';
+import { deliverOrder } from '@/lib/server/order-delivery';
+import { withPublic } from '@/lib/server/db';
+import { createProject, addToProject } from '@/lib/server/library';
+import { setTrackLicence } from '@/lib/server/storefront';
 import { makeUser } from './helpers';
 
 let fake: FakeStripe;
@@ -189,7 +193,7 @@ describe('Lot 4.3 — paiement (faux Stripe)', () => {
     expect(oe).toMatchObject({ status: 'refunded' });
     expect(oe.credit_note_no).toMatch(/^A\d{4}-\d{6}$/);
     expect((await shares(early.orderId)).map((r) => r.status)).toEqual(['canceled', 'canceled']);
-    expect(await runTransfers(early.orderId, new Date(Date.now() + 15 * DAY))).toEqual({ transferred: 0, held: 0 });
+    expect(await runTransfers(early.orderId, new Date(Date.now() + 15 * DAY))).toEqual({ transferred: 0, held: 0, failed: 0 });
     expect(fake.state.refunds.filter((r) => r.payment_intent === oe.payment_intent_id)).toHaveLength(1);
     await expect(refundBySeller(s.id, early.orderId)).rejects.toThrow('déjà remboursée');
     await drain();
@@ -199,8 +203,8 @@ describe('Lot 4.3 — paiement (faux Stripe)', () => {
 
     const late = await buy(s, s.basic.id);
     await pay(late.sessionId);
-    expect(await runTransfers(late.orderId, new Date(Date.now() + 13 * DAY))).toEqual({ transferred: 0, held: 0 }); // pas avant 14 jours
-    expect(await runTransfers(late.orderId, new Date(Date.now() + 15 * DAY))).toEqual({ transferred: 2, held: 0 });
+    expect(await runTransfers(late.orderId, new Date(Date.now() + 13 * DAY))).toEqual({ transferred: 0, held: 0, failed: 0 }); // pas avant 14 jours
+    expect(await runTransfers(late.orderId, new Date(Date.now() + 15 * DAY))).toEqual({ transferred: 2, held: 0, failed: 0 });
     const transfers = fake.state.transfers.filter((t) => (t.metadata as Record<string, string>).order_id === late.orderId);
     const lateShares = await shares(late.orderId);
     expect(transfers.map((t) => t.amount).sort()).toEqual(lateShares.map((r) => r.amountCents).sort());
@@ -256,7 +260,7 @@ describe('Lot 4.3 — paiement (faux Stripe)', () => {
     const s = await seller();
     const c = await buy(s, s.basic.id);
     await pay(c.sessionId);
-    expect(await runTransfers(c.orderId, new Date(Date.now() + 15 * DAY))).toEqual({ transferred: 0, held: 1 });
+    expect(await runTransfers(c.orderId, new Date(Date.now() + 15 * DAY))).toEqual({ transferred: 0, held: 1, failed: 0 });
     expect((await shares(c.orderId))[0].status).toBe('held');
     const { url } = await startOnboarding(s.id);
     expect(url).toContain('/onboard/acct_');
@@ -266,7 +270,7 @@ describe('Lot 4.3 — paiement (faux Stripe)', () => {
     expect(r).toMatchObject({ transfersActive: true, justActivated: true });
     const [{ n }] = await asService((tx) => tx<{ n: number }[]>`select count(*)::int as n from jobs where kind = 'order_transfers' and payload->>'orderId' = ${c.orderId} and status = 'queued' and run_after <= now()`);
     expect(n).toBe(1);
-    expect(await runTransfers(c.orderId, new Date(Date.now() + 15 * DAY))).toEqual({ transferred: 1, held: 0 });
+    expect(await runTransfers(c.orderId, new Date(Date.now() + 15 * DAY))).toEqual({ transferred: 1, held: 0, failed: 0 });
     expect((await shares(c.orderId))[0].status).toBe('transferred');
   });
 });
@@ -307,5 +311,186 @@ describe('Lot 4.4 — certificat', () => {
     // L'app n'a aucun droit d'écriture sur les ventes.
     await expect(withUser(s.id, (tx) => tx`update orders set status = 'refunded' where id = ${c.orderId}`)).rejects.toThrow('permission denied');
     await expect(withUser(s.id, (tx) => tx`insert into order_shares (order_id, user_id, is_owner, pct, amount_cents) values (${c.orderId}, ${s.id}, false, 1, 1)`)).rejects.toThrow('permission denied');
+  });
+});
+
+/** Producteur et collaborateur avec comptes de reversement actifs. */
+async function activeSeller() {
+  const s = await seller('pro');
+  const collab = await makeUser();
+  await setSplits(s.id, s.trackId, [{ handle: collab.handle, pct: 25 }]);
+  for (const u of [s.id, collab.id]) { const { url } = await startOnboarding(u); fake.activate(/onboard\/([^?]+)/.exec(url)![1]); await refreshAccount(u); }
+  return { ...s, collab };
+}
+const later = (days: number) => new Date(Date.now() + days * DAY);
+
+describe('Lot 4.3 — relecture indépendante : reprises après panne et cas limites', () => {
+  beforeEach(() => fake.clearFailures());
+  it('H4. licence simple payée après la vente de l’exclusive : remboursée automatiquement', async () => {
+    const s = await seller();
+    const lease = await buy(s, s.basic.id);
+    const excl = await buy(s, s.exclusive.id);
+    await pay(excl.sessionId);
+    await pay(lease.sessionId);
+    const o = await order(lease.orderId);
+    expect(o.status).toBe('refunded');
+    expect(o.refund_reason).toContain('Exclusivité vendue');
+    const [{ n }] = await asService((tx) => tx<{ n: number }[]>`select count(*)::int as n from jobs where kind = 'order_deliver' and payload->>'orderId' = ${lease.orderId}`);
+    expect(n).toBe(0);
+  });
+
+  it('H1. remboursement automatique en panne : repris par le balayage', async () => {
+    const s = await seller();
+    const first = await buy(s, s.exclusive.id);
+    await asService((tx) => tx`update tracks set exclusive_reserved_until = now() - interval '1 minute' where id = ${s.trackId}`);
+    const second = await buy(s, s.exclusive.id);
+    await pay(first.sessionId);
+    fake.failNext(/^\/v1\/refunds$/, 500);
+    fake.failNext(/^\/v1\/refunds$/, 500); // les essais internes du SDK aussi
+    fake.failNext(/^\/v1\/refunds$/, 500);
+    await pay(second.sessionId);
+    let o = await order(second.orderId);
+    expect(o.status).toBe('paid');
+    expect(o.refund_requested_at).not.toBeNull();
+    expect((await orderView(second.orderId))!.refundRequestedAt).not.toBeNull();
+    await sweepPayments(later(1));
+    await sleep(200);
+    o = await order(second.orderId);
+    expect(o.status).toBe('refunded');
+    expect(fake.state.refunds.filter((r) => r.payment_intent === o.payment_intent_id)).toHaveLength(1);
+  });
+
+  it('L2. remboursement déjà fait depuis le tableau de bord Stripe : accepté', async () => {
+    const s = await seller();
+    const c = await buy(s, s.basic.id);
+    await pay(c.sessionId);
+    const o = await order(c.orderId);
+    await fake.refundFromDashboard(o.payment_intent_id);
+    await refundBySeller(s.id, c.orderId).catch(async (e) => { if (!String(e.message).includes('déjà remboursée')) throw e; });
+    await sleep(200);
+    expect((await order(c.orderId)).status).toBe('refunded');
+  });
+
+  it('H2. virement en panne puis réponse perdue : repris sans doublon', async () => {
+    const s = await activeSeller();
+    const c = await buy(s, s.basic.id);
+    await pay(c.sessionId);
+    for (let i = 0; i < 3; i++) fake.failNext(/^\/v1\/transfers$/, 500);
+    let r = await runTransfers(c.orderId, later(15));
+    expect(r.failed).toBeGreaterThan(0);
+    // Second essai : Stripe fait le virement mais la réponse se perd.
+    for (let i = 0; i < 3; i++) fake.failNext(/^\/v1\/transfers$/, 500, { afterSuccess: true });
+    r = await runTransfers(c.orderId, later(16));
+    // Troisième passage (balayage) : on retrouve le virement fait au lieu d'en refaire un.
+    await sweepPayments(later(17));
+    const rows = await shares(c.orderId);
+    expect(rows.map((x) => x.status)).toEqual(['transferred', 'transferred']);
+    const transfers = fake.state.transfers.filter((t) => (t.metadata as Record<string, string>).order_id === c.orderId);
+    for (const x of rows) expect(transfers.filter((t) => (t.metadata as Record<string, string>).user_id === x.userId)).toHaveLength(1);
+  });
+
+  it('H3. reprise de virement en panne après remboursement : reprise plus tard', async () => {
+    const s = await activeSeller();
+    const c = await buy(s, s.basic.id);
+    await pay(c.sessionId);
+    expect((await runTransfers(c.orderId, later(15))).transferred).toBe(2);
+    for (let i = 0; i < 30; i++) fake.failNext(/\/reversals$/, 500); // Stripe en panne un moment (le webhook de remboursement réessaie aussi)
+    await refundBySeller(s.id, c.orderId);
+    await sleep(300);
+    expect((await shares(c.orderId)).some((x) => x.status === 'transferred')).toBe(true);
+    fake.clearFailures(); // Stripe revient
+    await sweepPayments(later(16));
+    expect((await shares(c.orderId)).map((x) => x.status)).toEqual(['reversed', 'reversed']);
+  });
+
+  it('M3. charge remboursée avant la confirmation ; litige : parts bloquées puis libérées', async () => {
+    const s = await activeSeller();
+    const c = await buy(s, s.basic.id);
+    await fake.pay(c.sessionId, { webhook: false });
+    const pi = (fake.state.sessions.get(c.sessionId) as { payment_intent: string }).payment_intent;
+    await fake.refundFromDashboard(pi);
+    await sleep(200); // charge.refunded arrive avant la confirmation : sans effet
+    await confirmPayment(c.sessionId);
+    expect((await order(c.orderId)).status).toBe('refunded');
+    expect(fake.state.refunds.filter((r) => r.payment_intent === pi)).toHaveLength(1);
+
+    const d = await buy(s, s.basic.id);
+    await pay(d.sessionId);
+    const dpi = (await order(d.orderId)).payment_intent_id;
+    expect(await fake.emitEvent('charge.dispute.created', { id: 'dp_1', object: 'dispute', payment_intent: dpi, status: 'needs_response' })).toBe(200);
+    expect((await shares(d.orderId)).map((x) => x.status)).toEqual(['disputed', 'disputed']);
+    expect(await runTransfers(d.orderId, later(15))).toEqual({ transferred: 0, held: 0, failed: 0 });
+    await fake.emitEvent('charge.dispute.closed', { id: 'dp_1', object: 'dispute', payment_intent: dpi, status: 'won' });
+    expect((await runTransfers(d.orderId, later(15))).transferred).toBe(2);
+  });
+
+  it('M4. parts calculées en entiers : jamais un centime perdu', () => {
+    expect(computeShares({ netCents: 375, commissionCents: 0, feeCents: 0, ownerId: 'o', splits: [{ userId: 'a', role: '', pct: 18.4 }] })[1].amountCents).toBe(69);
+    for (let i = 0; i < 2000; i++) {
+      const base = 100 + Math.floor(Math.random() * 1_000_000);
+      const pcts = [Math.floor(Math.random() * 4000) / 100, Math.floor(Math.random() * 4000) / 100];
+      const sh = computeShares({ netCents: base, commissionCents: 0, feeCents: 0, ownerId: 'o', splits: pcts.map((pct, k) => ({ userId: `c${k}`, role: '', pct })) });
+      pcts.forEach((pct, k) => expect(sh[k + 1].amountCents).toBe(Number((BigInt(base) * BigInt(Math.round(pct * 100))) / 10000n)));
+      expect(sh.reduce((a, x) => a + x.amountCents, 0)).toBe(base);
+    }
+  });
+
+  it('M6. email de livraison en échec : renvoyé au passage suivant', async () => {
+    const s = await seller();
+    const email = buyerEmail();
+    const c = await buy(s, s.basic.id, { email });
+    await pay(c.sessionId);
+    const dir = process.env.MAIL_DIR!;
+    process.env.MAIL_DIR = path.join(process.env.STORAGE_DIR!, 'o', `${s.trackId}.wav`); // un fichier : écriture impossible
+    await expect(deliverOrder(c.orderId)).rejects.toThrow();
+    process.env.MAIL_DIR = dir;
+    expect((await order(c.orderId)).buyer_notified_at).toBeNull();
+    await deliverOrder(c.orderId);
+    expect((await order(c.orderId)).buyer_notified_at).not.toBeNull();
+    const mails = await Promise.all((await readdir(dir)).map(async (f) => JSON.parse(await readFile(path.join(dir, f), 'utf8'))));
+    expect(mails.filter((m) => m.to === email && m.tag === 'order')).toHaveLength(1);
+  });
+
+  it('M5, M7, M8. limites, preuves du pays, email de l’acheteur caché aux collaborateurs', async () => {
+    const s = await seller();
+    await expect(startCheckout({ trackId: s.trackId, templateId: s.basic.id, country: 'constructor', email: buyerEmail() }, { buyerUserId: null, ip: '9.9.9.9' }))
+      .rejects.toThrow();
+    // Exclusive : deux essais par jour et par personne au plus.
+    for (let i = 0; i < 2; i++) {
+      const c = await startCheckout({ trackId: s.trackId, templateId: s.exclusive.id, country: 'FR', email: 'grief@x.fr' }, { buyerUserId: null, ip: '7.7.7.7' });
+      await fake.expire(new URL(c.url).pathname.split('/').pop()!);
+    }
+    await expect(startCheckout({ trackId: s.trackId, templateId: s.exclusive.id, country: 'FR', email: 'grief@x.fr' }, { buyerUserId: null, ip: '7.7.7.7' }))
+      .rejects.toThrow('deux fois');
+    // Déclaré hors UE, carte française : signalé.
+    const c = await buy(s, s.basic.id, { country: 'XX' });
+    await pay(c.sessionId, 'FR');
+    expect((await order(c.orderId)).country_conflict).toBe(true);
+    const ok = await buy(s, s.basic.id, { country: 'FR' });
+    await pay(ok.sessionId, 'FR');
+    expect((await order(ok.orderId)).country_conflict).toBe(false);
+    // Collaborateur : sa part, jamais l'email de l'acheteur.
+    const a = await activeSeller();
+    const d = await buy(a, a.basic.id);
+    await pay(d.sessionId);
+    expect((await listSales(a.collab.id))[0].buyerEmail).toBeNull();
+    expect((await listSales(a.id))[0].buyerEmail).toMatch(/@client\.fr$/);
+  });
+
+  it('L1. le catalogue public ne lit ni les ventes ni les données des morceaux privés', async () => {
+    const s = await activeSeller();
+    const c = await buy(s, s.basic.id);
+    await pay(c.sessionId);
+    await drain();
+    const priv = await asService(async (tx) => (await tx<{ id: string }[]>`insert into tracks (owner_id, title, visibility) values (${s.id}, 'Secret', 'private') returning id`)[0]);
+    await setTrackLicence(s.id, priv.id, s.basic.id, { enabled: true, priceCents: 999 });
+    const p = await createProject(s.id, { title: 'Projet privé' });
+    await addToProject(s.id, p.id, [s.trackId]);
+    const seen = await withPublic(async (tx) => ({
+      orders: await tx`select id from orders`, shares: await tx`select 1 from order_shares`, files: await tx`select 1 from order_files`,
+      certs: await tx`select 1 from licence_certificates`, splits: await tx`select 1 from track_splits`, accounts: await tx`select 1 from stripe_accounts`,
+      priv: await tx`select 1 from track_licences where track_id = ${priv.id}`, members: await tx`select 1 from project_tracks where project_id = ${p.id}`,
+    }));
+    for (const [k, v] of Object.entries(seen)) expect([k, v.length]).toEqual([k, 0]);
   });
 });

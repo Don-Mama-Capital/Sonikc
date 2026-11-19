@@ -19,6 +19,11 @@ export type FakeStripe = {
   activate(accountId: string): void;
   replay(eventId: string, opts?: { tamper?: boolean; oldTimestamp?: boolean }): Promise<number>;
   refundFromDashboard(paymentIntentId: string): Promise<void>;
+  /** Fait échouer la prochaine requête dont le chemin correspond (panne de Stripe simulée). */
+  failNext(path: RegExp, status?: number, opts?: { afterSuccess?: boolean }): void;
+  clearFailures(): void;
+  /** Envoie un événement signé quelconque (litiges…). */
+  emitEvent(type: string, object: Obj): Promise<number>;
 };
 
 const id = (p: string) => `${p}_test_${randomBytes(9).toString('base64url').replace(/[-_]/g, 'x')}`;
@@ -48,6 +53,7 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
   const intents = new Map<string, Obj>();
   const transfers: Obj[] = [], reversals: Obj[] = [], refunds: Obj[] = [], events: Obj[] = [];
   const idem = new Map<string, unknown>();
+  const failures: { path: RegExp; status: number; afterSuccess: boolean }[] = [];
   let base = '';
 
   const sign = (payload: string, timestamp?: number) =>
@@ -139,11 +145,23 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
       }
 
       // ── API ──
+      // Panne simulée : erreur avant traitement, ou traitement fait mais réponse perdue (afterSuccess).
+      const f = failures.findIndex((x) => x.path.test(url.pathname));
+      let loseResponse = false;
+      if (f >= 0) {
+        const [fail] = failures.splice(f, 1);
+        if (!fail.afterSuccess) return send(fail.status, { error: { type: 'api_error', message: 'fake-stripe: panne simulée' } });
+        loseResponse = true;
+      }
       const key = req.headers['idempotency-key'] as string | undefined;
       if (key && req.method === 'POST' && idem.has(`${url.pathname}|${key}`)) return send(200, idem.get(`${url.pathname}|${key}`));
       const body = req.method === 'POST' ? parseForm(raw) : {};
       const expand = [...url.searchParams].filter(([k]) => k.startsWith('expand')).map(([, v]) => v).concat((body.expand as string[]) ?? []);
-      const ok = (o: unknown) => { if (key && req.method === 'POST') idem.set(`${url.pathname}|${key}`, o); send(200, o); };
+      const ok = (o: unknown) => {
+        if (key && req.method === 'POST') idem.set(`${url.pathname}|${key}`, o);
+        if (loseResponse) return send(500, { error: { type: 'api_error', message: 'fake-stripe: réponse perdue' } });
+        send(200, o);
+      };
 
       if (req.method === 'POST' && url.pathname === '/v1/checkout/sessions') {
         const items = (body.line_items as Obj[]) ?? [];
@@ -172,9 +190,18 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
         if (!acct || (acct.capabilities as Obj).transfers !== 'active') return send(400, { error: { message: 'Destination account cannot receive transfers' } });
         if (!(Number(body.amount) > 0)) return send(400, { error: { message: 'Invalid amount' } });
         const t = { id: id('tr'), object: 'transfer', amount: Number(body.amount), currency: body.currency, destination: body.destination,
-          transfer_group: body.transfer_group, source_transaction: body.source_transaction ?? null, metadata: body.metadata ?? {}, reversed: false };
+          transfer_group: body.transfer_group, source_transaction: body.source_transaction ?? null, metadata: body.metadata ?? {}, reversed: false, amount_reversed: 0 };
         transfers.push(t);
         return ok(t);
+      }
+      if (req.method === 'GET' && url.pathname === '/v1/transfers') {
+        const group = url.searchParams.get('transfer_group');
+        return send(200, { object: 'list', has_more: false, data: transfers.filter((t) => !group || t.transfer_group === group) });
+      }
+      m = /^\/v1\/transfers\/([^/]+)$/.exec(url.pathname);
+      if (req.method === 'GET' && m) {
+        const t = transfers.find((x) => x.id === m![1]);
+        return t ? send(200, t) : send(404, { error: { message: 'No such transfer' } });
       }
       m = /^\/v1\/transfers\/([^/]+)\/reversals$/.exec(url.pathname);
       if (req.method === 'POST' && m) {
@@ -182,6 +209,7 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
         if (!t) return send(404, { error: { message: 'No such transfer' } });
         if (t.reversed) return send(400, { error: { message: 'Transfer already reversed' } });
         t.reversed = true;
+        t.amount_reversed = t.amount;
         const r = { id: id('trr'), object: 'transfer_reversal', amount: t.amount, transfer: t.id };
         reversals.push(r);
         return ok(r);
@@ -234,6 +262,9 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
       return opts.webhook(payload, sig);
     },
     async refundFromDashboard(piId) { await refund(piId, true); },
+    clearFailures() { failures.length = 0; },
+    failNext(path, status = 500, o = {}) { failures.push({ path, status, afterSuccess: Boolean(o.afterSuccess) }); },
+    emitEvent: (type, object) => emit(type, object),
   };
 }
 

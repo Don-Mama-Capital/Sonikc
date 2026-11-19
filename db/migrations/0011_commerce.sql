@@ -65,6 +65,8 @@ create table orders (
   -- Pays de l'acheteur : déclaré (base de la TVA) et preuve de la carte.
   country text not null check (country ~ '^[A-Z]{2}$'),
   card_country text,
+  -- Les deux preuves du pays se contredisent (pays déclaré ≠ pays de la carte) : à revoir par le comptable.
+  country_conflict boolean not null default false,
   ip_hash text,
   net_cents int not null check (net_cents >= 100),
   vat_rate numeric(4, 1) not null check (vat_rate >= 0 and vat_rate < 50),
@@ -81,6 +83,10 @@ create table orders (
   invoice_no text unique,
   credit_note_no text unique,
   refund_reason text,
+  -- Remboursement décidé mais pas encore confirmé par Stripe (repris par le balayage s'il échoue).
+  refund_requested_at timestamptz,
+  disputed_at timestamptz,
+  buyer_notified_at timestamptz,
   created_at timestamptz not null default now(),
   paid_at timestamptz,
   transfers_due_at timestamptz,
@@ -92,6 +98,7 @@ create table orders (
 create index orders_seller_idx on orders (seller_id, created_at desc);
 create index orders_buyer_idx on orders (lower(buyer_email));
 create index orders_pending_idx on orders (ip_hash, created_at) where status = 'pending';
+create index orders_track_recent_idx on orders (track_id, created_at) where exclusive;
 
 -- Parts figées au paiement : qui touche quoi. Seul le statut du virement évolue.
 create table order_shares (
@@ -101,11 +108,17 @@ create table order_shares (
   role text not null default '',
   pct numeric(5, 2) not null check (pct >= 0 and pct <= 100),
   amount_cents int not null check (amount_cents >= 0),
-  status text not null default 'scheduled' check (status in ('scheduled', 'held', 'transferred', 'canceled', 'reversed')),
+  status text not null default 'scheduled' check (status in ('scheduled', 'held', 'disputed', 'transferred', 'canceled', 'reversed')),
   transfer_id text,
+  -- Essais auprès de Stripe (dans la clé d'idempotence) et prochain essai : rien n'est abandonné.
+  attempts int not null default 0,
+  retry_at timestamptz,
+  last_error text,
   updated_at timestamptz not null default now(),
   primary key (order_id, user_id)
 );
+
+create index order_shares_open_idx on order_shares (status, retry_at) where status in ('scheduled', 'held', 'transferred');
 
 -- Numérotation des factures et avoirs : une série par type et par année, sans trou (ligne verrouillée dans la transaction).
 create table invoice_counters (series text primary key, last_no int not null default 0);

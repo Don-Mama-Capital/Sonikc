@@ -31,10 +31,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   process.on('SIGINT', () => { stopping = true; });
   process.on('SIGTERM', () => { stopping = true; });
   let lastHousekeeping = 0;
+  let lastSweep = 0;
   while (!stopping) {
     if (Date.now() - lastHousekeeping > 3600_000) {
       lastHousekeeping = Date.now();
       await housekeeping().then((r) => console.log('ménage', r), (e) => console.error('ménage en échec', e));
+    }
+    // Paiements : reprise de tout ce qui a échoué (remboursements, virements, reprises, livraisons).
+    if (Date.now() - lastSweep > 10 * 60_000) {
+      lastSweep = Date.now();
+      const { paymentsEnabled } = await import('../src/lib/server/stripe');
+      if (paymentsEnabled()) {
+        const { sweepPayments } = await import('../src/lib/server/commerce');
+        await sweepPayments().then((r) => console.log('paiements', r), (e) => console.error('balayage paiements en échec', e));
+      }
     }
     const n = await drain((m) => console.log(m));
     if (n === 0) await new Promise((r) => setTimeout(r, 1000));

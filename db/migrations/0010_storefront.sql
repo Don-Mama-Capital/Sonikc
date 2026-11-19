@@ -78,14 +78,15 @@ create policy tracks_public on tracks for select to sonikc_app
               or (visibility is null and exists (
                     select 1 from project_tracks pt join projects p on p.id = pt.project_id
                     where pt.track_id = tracks.id and p.deleted_at is null and p.password_hash is null and p.visibility in ('public', 'for_sale')))));
+-- Appartenances visibles seulement pour les projets publics (sous-requête soumise à la RLS des projets).
 create policy project_tracks_public on project_tracks for select to sonikc_app
-  using (app.in_public_catalog());
+  using (app.in_public_catalog() and exists (select 1 from projects p where p.id = project_id));
 create policy track_versions_public on track_versions for select to sonikc_app
   using (app.in_public_catalog() and id in (select t.current_version_id from tracks t)); -- tracks filtré par sa propre RLS
 create policy licence_templates_public on licence_templates for select to sonikc_app
   using (app.in_public_catalog() and active);
 create policy track_licences_public on track_licences for select to sonikc_app
-  using (app.in_public_catalog());
+  using (app.in_public_catalog() and exists (select 1 from tracks t where t.id = track_id));
 
 -- Offre du producteur (la phase 5 la gère par abonnement) : jamais modifiable par l'app directement.
 alter table profiles add column plan text not null default 'free' check (plan in ('free', 'pro', 'studio'));

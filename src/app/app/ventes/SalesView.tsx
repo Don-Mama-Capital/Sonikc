@@ -4,10 +4,11 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/client/api';
 import { euros } from '@/lib/licences';
 import type { SaleRow } from '@/lib/server/commerce';
+import { COUNTRIES, OUTSIDE_EU } from '@/config/vat';
 
 type Account = { accountId: string; transfersActive: boolean; detailsSubmitted: boolean } | null;
 const SHARE_STATUS: Record<string, string> = {
-  scheduled: 'Virement prévu', held: 'En attente de ton compte de reversement', transferred: 'Virée', canceled: 'Annulée (remboursement)', reversed: 'Reprise (remboursement)',
+  scheduled: 'Virement prévu', held: 'En attente de ton compte de reversement', disputed: 'Bloquée : litige bancaire en cours', transferred: 'Virée', canceled: 'Annulée (remboursement)', reversed: 'Reprise (remboursement)',
 };
 const date = (d: string | Date) => new Date(d).toLocaleDateString('fr-FR');
 
@@ -21,9 +22,10 @@ export function SalesView() {
     setAccount(a.account); setSales(s);
   }, []);
   useEffect(() => { load().catch((e) => setMsg({ ok: false, text: e.message })); }, [load]);
+  const [country, setCountry] = useState('FR');
   const onboard = async () => {
     setMsg(null);
-    try { const { url } = await api<{ url: string }>('/api/connect', { method: 'POST' }); window.location.href = url; }
+    try { const { url } = await api<{ url: string }>('/api/connect', { method: 'POST', body: { country } }); window.location.href = url; }
     catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
   };
   const total = (sales ?? []).filter((s) => s.status === 'paid').reduce((a, s) => a + s.myShareCents, 0);
@@ -46,7 +48,15 @@ export function SalesView() {
           </p>
         </div>
         {account !== undefined && !account?.transfersActive && (
-          <button className="btn-primary" onClick={onboard} data-testid="onboard">{account ? 'Terminer l’activation' : 'Activer mes reversements'}</button>
+          <div className="flex flex-wrap items-center gap-2">
+            {!account && (
+              <label className="text-sm"><span className="sr-only">Pays de ton compte bancaire</span>
+                <select className="input" value={country} onChange={(e) => setCountry(e.target.value)} aria-label="Pays de ton compte bancaire">
+                  {COUNTRIES.filter((c) => c.code !== OUTSIDE_EU).map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                </select></label>
+            )}
+            <button className="btn-primary" onClick={onboard} data-testid="onboard">{account ? 'Terminer l’activation' : 'Activer mes reversements'}</button>
+          </div>
         )}
       </section>
 

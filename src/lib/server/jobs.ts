@@ -1,7 +1,7 @@
 import type { Tx } from './db';
 import { asService } from './db';
 
-export type JobKind = 'process_version' | 'unzip_import' | 'campaign_send' | 'campaign_followup' | 'order_deliver' | 'order_transfers' | 'order_credit_note';
+export type JobKind = 'process_version' | 'unzip_import' | 'campaign_send' | 'campaign_followup' | 'order_deliver' | 'order_transfers' | 'order_credit_note' | 'order_refund';
 
 export async function enqueue(tx: Tx, kind: JobKind, payload: Record<string, unknown>, runAfter: Date = new Date()) {
   await tx`insert into jobs (kind, payload, run_after) values (${kind}, ${tx.json(payload as never)}, ${runAfter})`;

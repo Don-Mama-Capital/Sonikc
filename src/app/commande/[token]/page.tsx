@@ -42,7 +42,8 @@ export default async function OrderPage({ params, searchParams }: { params: Prom
           </header>
           <section className="card space-y-3 p-5">
             <h2 className="font-semibold">Tes fichiers</h2>
-            {o.status === 'paid' && !o.deliveredAt && <><p className="text-sm text-mute" data-testid="order-preparing">Préparation des fichiers… (moins d’une minute)</p><AutoRefresh /></>}
+            {o.status === 'paid' && o.refundRequestedAt && <><p className="text-sm text-mute" data-testid="order-refunding">Cette licence n’est plus disponible : ton paiement est en cours de remboursement.</p><AutoRefresh /></>}
+            {o.status === 'paid' && !o.refundRequestedAt && !o.deliveredAt && <><p className="text-sm text-mute" data-testid="order-preparing">Préparation des fichiers… (moins d’une minute)</p><AutoRefresh /></>}
             <ul className="divide-y divide-line" data-testid="order-files">
               {files.map((f) => (
                 <li key={f.kind} className="flex items-center justify-between gap-3 py-2 text-sm">

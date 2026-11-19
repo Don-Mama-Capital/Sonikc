@@ -47,3 +47,21 @@
 | --- | --- | --- |
 | 1 | Certificat horodaté téléchargeable ; l'empreinte inscrite = l'empreinte du fichier | Test |
 | 2 | Informations verrouillées : plus modifiables après émission (contrôlé par la base) | Test |
+
+## Compte rendu (19 novembre 2026)
+
+| Lot | Critères | Preuves |
+| --- | --- | --- |
+| 4.1 Page publique | 4/4 | `tests/unit/storefront.test.ts` (3), recette `storefront.spec.ts` à 375 px, Lighthouse page publique 100 / 100 / 100 / 90 |
+| 4.2 Licences | 3/3 | `storefront.test.ts` (4), recette |
+| 4.3 Paiement | 7/7 (faux Stripe) | `tests/unit/commerce.test.ts` (18), recette `purchase.spec.ts` ; test réel Stripe : `tests/live/stripe.test.ts`, actif avec le secret `STRIPE_TEST_SECRET_KEY` |
+| 4.4 Certificat | 2/2 | `commerce.test.ts` (2), empreinte vérifiée dans la recette |
+
+### Relecture indépendante (lots 4.3 et droits d'accès)
+
+Aucune fuite entre comptes. 4 problèmes hauts, 9 moyens, 6 bas : tous traités et testés.
+
+- **Hauts** : remboursement automatique, virement et reprise de virement en panne n'étaient jamais retentés ; une licence simple pouvait être payée après la vente de l'exclusive. → Remboursement demandé enregistré dans la même transaction, tâche dédiée ; parts retentées une heure plus tard avec une nouvelle clé d'idempotence, après avoir vérifié chez Stripe qu'aucun virement n'est déjà parti ; balayage toutes les 10 minutes (remboursements, virements, reprises, livraisons) ; morceau verrouillé à chaque paiement, toute licence payée après la vente de l'exclusive est remboursée.
+- **Moyens** : marge d'expiration de la session (32 min), carte seulement (pas de paiement différé), événements dans le désordre et litiges (parts bloquées puis libérées ou reprises), parts calculées en entiers, limite d'essais d'exclusive par personne et par morceau, email de livraison renvoyé s'il échoue, désaccord entre pays déclaré et pays de la carte signalé, email de l'acheteur caché aux collaborateurs, pays du compte de reversement choisi par le producteur.
+- **Bas** : politiques publiques limitées aux morceaux et projets visibles, remboursement déjà fait chez Stripe accepté, seules les vraies erreurs de signature refusent un webhook, fichiers livrés rangés par empreinte (jamais écrasés), plus de chaînes de tâches en double.
+- **À trancher par le propriétaire** : frais Stripe perdus par Sonikc lors d'un remboursement ; un producteur peut rembourser après le virement, ce qui reprend aussi la part des collaborateurs ; un producteur peut ajouter n'importe quel identifiant comme collaborateur sans son accord.

@@ -23,7 +23,8 @@ const MAX_FILE = 1_000_000_000;
 type Order = {
   id: string; status: string; trackTitle: string; sellerName: string; sellerId: string; licence: LicenceTerms & { name: string; description: string };
   buyerEmail: string; country: string; netCents: number; vatRate: number; vatCents: number; grossCents: number;
-  invoiceNo: string; creditNoteNo: string | null; paidAt: Date; refundedAt: Date | null; deliveredAt: Date | null;
+  invoiceNo: string; creditNoteNo: string | null; paidAt: Date; refundedAt: Date | null; deliveredAt: Date | null; buyerNotifiedAt: Date | null;
+  refundRequested: Date | null;
   originalKey: string | null; format: string | null; sourceSha: string | null; sellerHandle: string;
 };
 
@@ -32,7 +33,8 @@ async function loadOrder(orderId: string) {
     select o.id, o.status, o.track_title as "trackTitle", o.seller_name as "sellerName", o.seller_id as "sellerId", o.licence,
            o.buyer_email as "buyerEmail", o.country, o.net_cents as "netCents", o.vat_rate::float as "vatRate", o.vat_cents as "vatCents",
            o.gross_cents as "grossCents", o.invoice_no as "invoiceNo", o.credit_note_no as "creditNoteNo", o.paid_at as "paidAt",
-           o.refunded_at as "refundedAt", o.delivered_at as "deliveredAt",
+           o.refunded_at as "refundedAt", o.delivered_at as "deliveredAt", o.buyer_notified_at as "buyerNotifiedAt",
+           o.refund_requested_at as "refundRequested",
            v.original_key as "originalKey", v.format, v.sha256 as "sourceSha", p.handle as "sellerHandle"
     from orders o left join track_versions v on v.id = o.version_id join profiles p on p.user_id = o.seller_id
     where o.id = ${orderId}`);
@@ -46,9 +48,10 @@ const countryName = (c: string) => EU_VAT[c]?.name ?? 'Hors Union européenne';
 const testBanner: Block[] = COMPANY.testMode ? [{ kind: 'text', text: 'DOCUMENT DE TEST — paiement en mode test Stripe, sans valeur commerciale ni fiscale.', muted: true }, { kind: 'space' }] : [];
 
 async function putFile(orderId: string, kind: string, ext: string, filename: string, buf: Buffer, contentType?: string) {
-  const key = `orders/${orderId}/${kind}.${ext}`;
-  await store().put(key, buf, MAX_FILE, contentType);
+  // Clé tirée du contenu : un essai concurrent ou tardif ne peut jamais écraser le fichier déjà enregistré.
   const hash = sha256(buf);
+  const key = `orders/${orderId}/${kind}-${hash.slice(0, 16)}.${ext}`;
+  await store().put(key, buf, MAX_FILE, contentType);
   await asService((tx) => tx`insert into order_files (order_id, kind, storage_key, filename, sha256, size_bytes)
     values (${orderId}, ${kind}, ${key}, ${filename}, ${hash}, ${buf.length}) on conflict (order_id, kind) do nothing`);
   const [f] = await asService((tx) => tx<{ sha256: string; size: number; filename: string }[]>`
@@ -64,7 +67,7 @@ async function existing(orderId: string) {
 
 export async function deliverOrder(orderId: string) {
   const o = await loadOrder(orderId);
-  if (!o || o.status !== 'paid' || o.deliveredAt) return;
+  if (!o || o.status !== 'paid' || o.refundRequested || o.buyerNotifiedAt) return;
   if (!o.originalKey || !o.sourceSha) throw new Error('fichier source introuvable');
   const have = await existing(orderId);
   const base = safeName(`${o.trackTitle} - ${o.sellerName} (${o.licence.name})`);
@@ -149,9 +152,8 @@ export async function deliverOrder(orderId: string) {
     await putFile(orderId, 'invoice', 'pdf', `Facture ${o.invoiceNo}.pdf`, pdf, 'application/pdf');
   }
 
-  // 4. Marquée livrée une seule fois, puis les emails (clé d'idempotence en plus).
-  const first = await asService(async (tx) => (await tx`update orders set delivered_at = now() where id = ${orderId} and delivered_at is null returning id`).length > 0);
-  if (!first) return;
+  // 4. Fichiers prêts, puis les emails ; « prévenu » seulement après l'envoi réussi (sinon nouvel essai, sans doublon grâce aux clés d'idempotence).
+  await asService((tx) => tx`update orders set delivered_at = coalesce(delivered_at, now()) where id = ${orderId}`);
   const url = orderUrl(orderId);
   await sendMail({
     to: o.buyerEmail, tag: 'order', idempotencyKey: `order-buyer-${orderId}`, fromName: `${o.sellerName} via Sonikc`,
@@ -164,6 +166,7 @@ export async function deliverOrder(orderId: string) {
     subject: `Nouvelle vente : ${o.trackTitle} (${o.licence.name})`,
     text: `Bonne nouvelle : ${o.trackTitle} vient d’être acheté (licence ${o.licence.name}, ${euros(o.netCents)} HT).\n\nLe détail et ta part sont dans « Ventes » :\n${url.replace(/\/commande\/.*/, '/app/ventes')}\n\n— Sonikc`,
   });
+  await asService((tx) => tx`update orders set buyer_notified_at = now() where id = ${orderId}`);
 }
 
 /** Avoir après remboursement (numéroté dans sa propre série), envoyé à l'acheteur. */
