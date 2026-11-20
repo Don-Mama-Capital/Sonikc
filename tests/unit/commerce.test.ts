@@ -10,7 +10,7 @@ import { store } from '@/lib/server/storage';
 import { sha256 } from '@/lib/server/crypto';
 import {
   commissionCents, computeShares, confirmPayment, handleWebhook, listPurchases, listSales, orderFile, orderView, parseOrderToken,
-  refreshAccount, refundBySeller, runTransfers, setSplits, startCheckout, startOnboarding, sweepPayments,
+  refreshAccount, refundByPlatform, refundBySeller, respondSplit, listSplits, listSplitInvites, runTransfers, setSplits, startCheckout, startOnboarding, sweepPayments,
 } from '@/lib/server/commerce';
 import { OFFERS } from '@/config/offers';
 import { startFakeStripe, type FakeStripe } from '../../scripts/fake-stripe';
@@ -158,6 +158,7 @@ describe('Lot 4.3 — paiement (faux Stripe)', () => {
       const s = await seller(plan);
       const a = await makeUser(); const b = await makeUser();
       await setSplits(s.id, s.trackId, [{ handle: a.handle, role: 'Co-prod', pct: 33.33 }, { handle: b.handle, role: 'Topline', pct: 20 }]);
+      await respondSplit(a.id, s.trackId, true); await respondSplit(b.id, s.trackId, true);
       const c = await buy(s, s.premium.id, { country: 'FR' });
       await pay(c.sessionId);
       const o = await order(c.orderId);
@@ -183,6 +184,7 @@ describe('Lot 4.3 — paiement (faux Stripe)', () => {
     const s = await seller('pro');
     const collab = await makeUser();
     await setSplits(s.id, s.trackId, [{ handle: collab.handle, pct: 25 }]);
+    await respondSplit(collab.id, s.trackId, true);
     for (const u of [s.id, collab.id]) { const { url } = await startOnboarding(u); fake.activate(/onboard\/([^?]+)/.exec(url)![1]); await refreshAccount(u); }
 
     const early = await buy(s, s.basic.id);
@@ -209,7 +211,10 @@ describe('Lot 4.3 — paiement (faux Stripe)', () => {
     const lateShares = await shares(late.orderId);
     expect(transfers.map((t) => t.amount).sort()).toEqual(lateShares.map((r) => r.amountCents).sort());
     expect(transfers.every((t) => t.source_transaction)).toBe(true);
-    await refundBySeller(s.id, late.orderId);
+    // Après le virement, le producteur ne peut plus rembourser seul : c'est Sonikc qui décide (support, litige).
+    await expect(refundBySeller(s.id, late.orderId)).rejects.toThrow('support de Sonikc');
+    expect((await listSales(s.id)).find((x) => x.id === late.orderId)!.refundable).toBe(false);
+    await refundByPlatform(late.orderId, 'Remboursé par le support');
     expect((await shares(late.orderId)).map((r) => r.status)).toEqual(['reversed', 'reversed']);
     expect(fake.state.reversals.filter((r) => transfers.some((t) => t.id === r.transfer))).toHaveLength(2);
   });
@@ -319,6 +324,7 @@ async function activeSeller() {
   const s = await seller('pro');
   const collab = await makeUser();
   await setSplits(s.id, s.trackId, [{ handle: collab.handle, pct: 25 }]);
+  await respondSplit(collab.id, s.trackId, true);
   for (const u of [s.id, collab.id]) { const { url } = await startOnboarding(u); fake.activate(/onboard\/([^?]+)/.exec(url)![1]); await refreshAccount(u); }
   return { ...s, collab };
 }
@@ -395,7 +401,7 @@ describe('Lot 4.3 — relecture indépendante : reprises après panne et cas lim
     await pay(c.sessionId);
     expect((await runTransfers(c.orderId, later(15))).transferred).toBe(2);
     for (let i = 0; i < 30; i++) fake.failNext(/\/reversals$/, 500); // Stripe en panne un moment (le webhook de remboursement réessaie aussi)
-    await refundBySeller(s.id, c.orderId);
+    await refundByPlatform(c.orderId, 'Litige réglé par le support');
     await sleep(300);
     expect((await shares(c.orderId)).some((x) => x.status === 'transferred')).toBe(true);
     fake.clearFailures(); // Stripe revient
@@ -492,5 +498,52 @@ describe('Lot 4.3 — relecture indépendante : reprises après panne et cas lim
       priv: await tx`select 1 from track_licences where track_id = ${priv.id}`, members: await tx`select 1 from project_tracks where project_id = ${p.id}`,
     }));
     for (const [k, v] of Object.entries(seen)) expect([k, v.length]).toEqual([k, 0]);
+  });
+});
+
+describe('Lot 4.3 — choix du 20/11 : accord des collaborateurs, remboursement par le producteur', () => {
+  it('une part ne s’applique qu’après l’accord du collaborateur ; lui seul répond', async () => {
+    const s = await seller();
+    const a = await makeUser(); const b = await makeUser();
+    await setSplits(s.id, s.trackId, [{ handle: a.handle, pct: 30 }, { handle: b.handle, pct: 20 }]);
+    expect((await listSplits(s.id, s.trackId)).map((x) => x.status)).toEqual(['pending', 'pending']);
+    // Invitation reçue par email et visible dans « Ventes ».
+    expect((await listSplitInvites(a.id)).map((x) => [x.trackTitle, x.pct, x.status])).toEqual([['Lueur froide', 30, 'pending']]);
+    const dir = process.env.MAIL_DIR!;
+    const mails = await Promise.all((await readdir(dir)).map(async (f) => JSON.parse(await readFile(path.join(dir, f), 'utf8'))));
+    expect(mails.some((m) => m.to === a.email && m.tag === 'split_invite')).toBe(true);
+    // Le propriétaire ne peut pas accepter à sa place ; un inconnu ne peut pas répondre ; le collaborateur ne change pas sa part.
+    await expect(withUser(s.id, (tx) => tx`update track_splits set status = 'accepted' where track_id = ${s.trackId}`)).rejects.toThrow('only the collaborator');
+    await expect(respondSplit((await makeUser()).id, s.trackId, true)).rejects.toThrow();
+    await expect(withUser(a.id, (tx) => tx`update track_splits set pct = 90 where track_id = ${s.trackId} and collaborator_id = ${a.id}`)).rejects.toThrow('belong to the owner');
+    const c3 = await makeUser();
+    await withUser(s.id, (tx) => tx`insert into track_splits (track_id, owner_id, collaborator_id, pct, status) values (${s.trackId}, ${s.id}, ${c3.id}, 5, 'accepted')`);
+    expect((await listSplits(s.id, s.trackId)).filter((x) => x.status === 'accepted')).toHaveLength(0); // statut forcé « en attente »
+    await withUser(s.id, (tx) => tx`delete from track_splits where track_id = ${s.trackId} and collaborator_id = ${c3.id}`);
+    // Vente avant tout accord : 100 % au propriétaire.
+    const c1 = await buy(s, s.basic.id); await pay(c1.sessionId);
+    expect((await shares(c1.orderId)).map((x) => x.isOwner)).toEqual([true]);
+    // A accepte, B refuse : seule la part de A s'applique ; la part refusée ne compte plus dans le total.
+    await respondSplit(a.id, s.trackId, true);
+    await respondSplit(b.id, s.trackId, false);
+    await expect(respondSplit(a.id, s.trackId, false)).rejects.toThrow(); // déjà répondu
+    const c2 = await buy(s, s.basic.id); await pay(c2.sessionId);
+    expect((await shares(c2.orderId)).map((x) => [x.isOwner, x.pct])).toEqual([[true, 70], [false, 30]]);
+    // Changer le pourcentage redemande l'accord ; une ligne inchangée garde la réponse.
+    await setSplits(s.id, s.trackId, [{ handle: a.handle, pct: 35 }, { handle: b.handle, pct: 20 }]);
+    const after = await listSplits(s.id, s.trackId);
+    expect(after.map((x) => [x.handle, x.status])).toEqual([[a.handle, 'pending'], [b.handle, 'declined']]);
+  });
+
+  it('remboursement par le producteur : possible jusqu’au virement, ensuite par Sonikc seulement', async () => {
+    const s = await activeSeller();
+    const c = await buy(s, s.basic.id);
+    await pay(c.sessionId);
+    expect((await listSales(s.id))[0].refundable).toBe(true);
+    await runTransfers(c.orderId, later(15));
+    await expect(refundBySeller(s.id, c.orderId)).rejects.toThrow('support de Sonikc');
+    expect((await order(c.orderId)).refund_requested_at).toBeNull();
+    // Commission : offre Pro à 0 %.
+    expect((await order(c.orderId)).commission_cents).toBe(0);
   });
 });

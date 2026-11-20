@@ -19,7 +19,15 @@ test('achat de bout en bout (faux Stripe) : licence, paiement, fichiers, certifi
   await page.getByLabel('Identifiant Sonikc du collaborateur').fill(`@${collabHandle}`);
   await page.getByLabel('Part en %').fill('25');
   await page.getByTestId('track-splits').getByRole('button', { name: 'Ajouter' }).click();
-  await expect(page.getByTestId('track-splits')).toContainText('75 %');
+  await expect(page.getByTestId('split-status')).toContainText('en attente de son accord');
+  await expect(page.getByTestId('my-pct')).toHaveText('100 %');
+  // Le collaborateur accepte depuis « Ventes ».
+  await collab.goto('/app/ventes');
+  await collab.getByTestId('collab').getByTestId('accept').click();
+  await expect(collab.getByTestId('collab')).toContainText('acceptée');
+  await page.reload();
+  await page.getByTestId('share').click();
+  await expect(page.getByTestId('my-pct')).toHaveText('75 %');
 
   // L'acheteur, sans compte, sur mobile.
   const buyer = await (await browser.newContext({ viewport: { width: 375, height: 800 } })).newPage();

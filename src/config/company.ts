@@ -9,3 +9,10 @@ export const COMPANY = {
   vatNumber: 'N° de TVA à compléter',
   testMode: true,
 };
+
+/** Avant toute vente réelle : refuse de facturer tant qu'une mention légale reste « à compléter ». */
+export function assertInvoiceReady(c: typeof COMPANY = COMPANY) {
+  if (c.testMode) return;
+  const missing = [c.legal, c.address, c.vatNumber].some((v) => /compléter/i.test(v));
+  if (missing) throw new Error('Mentions légales des factures à compléter avant la vente réelle (src/config/company.ts).');
+}

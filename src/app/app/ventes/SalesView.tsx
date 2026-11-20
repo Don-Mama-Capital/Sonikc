@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/client/api';
 import { euros } from '@/lib/licences';
-import type { SaleRow } from '@/lib/server/commerce';
+import type { SaleRow, SplitInvite } from '@/lib/server/commerce';
 import { COUNTRIES, OUTSIDE_EU } from '@/config/vat';
 
 type Account = { accountId: string; transfersActive: boolean; detailsSubmitted: boolean } | null;
@@ -16,10 +16,11 @@ const date = (d: string | Date) => new Date(d).toLocaleDateString('fr-FR');
 export function SalesView() {
   const [account, setAccount] = useState<Account | undefined>(undefined);
   const [sales, setSales] = useState<SaleRow[] | null>(null);
+  const [invites, setInvites] = useState<SplitInvite[]>([]);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const load = useCallback(async () => {
-    const [a, s] = await Promise.all([api<{ account: Account }>('/api/connect'), api<SaleRow[]>('/api/sales')]);
-    setAccount(a.account); setSales(s);
+    const [a, s, i] = await Promise.all([api<{ account: Account }>('/api/connect'), api<SaleRow[]>('/api/sales'), api<SplitInvite[]>('/api/splits')]);
+    setAccount(a.account); setSales(s); setInvites(i);
   }, []);
   useEffect(() => { load().catch((e) => setMsg({ ok: false, text: e.message })); }, [load]);
   const [country, setCountry] = useState('FR');
@@ -60,6 +61,29 @@ export function SalesView() {
         )}
       </section>
 
+      {invites.length > 0 && (
+        <section className="space-y-2" data-testid="collabs">
+          <h2 className="text-lg font-semibold">Collaborations</h2>
+          <ul className="space-y-2">
+            {invites.map((i) => (
+              <li key={i.trackId} className="card flex flex-wrap items-center justify-between gap-3 p-4 text-sm" data-testid="collab">
+                <span className="min-w-0">
+                  <span className="block font-medium">{i.trackTitle} <span className="font-normal text-mute">· par {i.ownerName} (@{i.ownerHandle})</span></span>
+                  <span className="block text-mute">{String(i.pct).replace('.', ',')} % de chaque vente{i.role && ` · ${i.role}`}
+                    {i.status === 'accepted' ? ' · acceptée' : ' · s’applique aux ventes faites après ton accord'}</span>
+                </span>
+                {i.status === 'pending' && (
+                  <span className="flex gap-2">
+                    <button className="btn-primary" data-testid="accept" onClick={async () => { await api(`/api/splits/${i.trackId}`, { method: 'POST', body: { accept: true } }); await load(); }}>Accepter</button>
+                    <button className="btn-ghost" onClick={async () => { await api(`/api/splits/${i.trackId}`, { method: 'POST', body: { accept: false } }); await load(); }}>Refuser</button>
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section className="space-y-3">
         <div className="flex items-baseline justify-between">
           <h2 className="text-lg font-semibold">Historique</h2>
@@ -88,9 +112,12 @@ export function SalesView() {
               {s.isSeller && s.shares.length > 1 && (
                 <ul className="text-xs text-mute">{s.shares.map((x) => <li key={x.handle}>@{x.handle} · {String(x.pct).replace('.', ',')} % · {euros(x.amountCents)} · {SHARE_STATUS[x.status]}</li>)}</ul>
               )}
-              {s.isSeller && s.status === 'paid' && (
+              {s.isSeller && s.status === 'paid' && !s.refundable && (
+                <p className="text-xs text-mute">Virement parti : pour rembourser, écris au support de Sonikc.</p>
+              )}
+              {s.isSeller && s.refundable && (
                 <button className="text-sm text-mute underline hover:text-text" data-testid="refund" onClick={async () => {
-                  if (!confirm(`Rembourser ${euros(s.grossCents)} à ${s.buyerEmail} ? La licence ne sera plus valable. Si ta part a déjà été virée, elle sera reprise.`)) return;
+                  if (!confirm(`Rembourser ${euros(s.grossCents)} à ${s.buyerEmail} ? La licence ne sera plus valable.`)) return;
                   setMsg(null);
                   try { await api(`/api/sales/${s.id}/refund`, { method: 'POST' }); await load(); setMsg({ ok: true, text: 'Vente remboursée.' }); }
                   catch (e) { setMsg({ ok: false, text: (e as Error).message }); }

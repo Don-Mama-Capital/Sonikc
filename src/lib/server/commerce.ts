@@ -6,9 +6,11 @@ import { env } from './env';
 import { hmac, safeEqualStr, sha256 } from './crypto';
 import { enqueue } from './jobs';
 import { stripe, verifyWebhook } from './stripe';
+import { sendMail } from './mail';
 import { trackOffers } from './storefront';
 import { EU_VAT, OUTSIDE_EU, withVat } from '@/config/vat';
 import { commissionPct } from '@/config/offers';
+import { assertInvoiceReady } from '@/config/company';
 
 /**
  * Lot 4.3 — ventes en mode test Stripe.
@@ -85,35 +87,89 @@ export async function listSplits(userId: string, trackId: string) {
   return withUser(userId, async (tx) => {
     const [t] = await tx`select 1 from tracks where id = ${trackId}`;
     if (!t) throw new NotFound();
-    return tx<{ handle: string; displayName: string; role: string; pct: number; payoutsReady: boolean }[]>`
-      select p.handle, p.display_name as "displayName", s.role, s.pct::float as pct,
+    return tx<{ handle: string; displayName: string; role: string; pct: number; status: 'pending' | 'accepted' | 'declined'; payoutsReady: boolean }[]>`
+      select p.handle, p.display_name as "displayName", s.role, s.pct::float as pct, s.status,
              exists (select 1 from stripe_accounts a where a.user_id = s.collaborator_id and a.transfers_active) as "payoutsReady"
       from track_splits s join profiles p on p.user_id = s.collaborator_id
       where s.track_id = ${trackId} order by s.pct desc`;
   });
 }
 
-/** Remplace la liste des collaborateurs d'un morceau (par identifiant Sonikc). Total ≤ 100 % (contrôlé par la base). */
+/**
+ * Met à jour la liste des collaborateurs d'un morceau (par identifiant Sonikc). Une ligne inchangée garde la réponse
+ * du collaborateur ; une nouvelle ligne, ou un pourcentage ou rôle changé, lui redemande son accord (la base l'impose)
+ * et lui envoie une invitation. Total ≤ 100 % hors parts refusées (contrôlé par la base).
+ */
 export async function setSplits(userId: string, trackId: string, raw: unknown) {
   uuid.parse(trackId);
   const list = splitsSchema.parse(raw);
-  const total = list.reduce((a, s) => a + s.pct, 0);
-  if (total > 100) throw new Invalid('Le total des parts dépasse 100 %.');
-  await withUser(userId, async (tx) => {
-    const [t] = await tx`select 1 from tracks where id = ${trackId}`;
+  if (list.reduce((a, s) => a + s.pct, 0) > 100) throw new Invalid('Le total des parts dépasse 100 %.');
+  const invite = await withUser(userId, async (tx) => {
+    const [t] = await tx<{ title: string }[]>`select title from tracks where id = ${trackId}`;
     if (!t) throw new NotFound();
-    await tx`delete from track_splits where track_id = ${trackId}`;
-    const seen = new Set<string>();
+    const current = await tx<{ collaboratorId: string; role: string; pct: number }[]>`
+      select collaborator_id as "collaboratorId", role, pct::float as pct from track_splits where track_id = ${trackId}`;
+    const wanted = new Map<string, { role: string; pct: number; handle: string }>();
     for (const s of list) {
       const [p] = await tx<{ userId: string }[]>`select user_id as "userId" from profiles where lower(handle) = ${s.handle.toLowerCase().replace(/^@/, '')}`;
       if (!p) throw new Invalid(`Identifiant inconnu : ${s.handle}`);
       if (p.userId === userId) throw new Invalid('Ta propre part est le reste : ne t’ajoute pas comme collaborateur.');
-      if (seen.has(p.userId)) throw new Invalid(`${s.handle} figure deux fois.`);
-      seen.add(p.userId);
-      await tx`insert into track_splits (track_id, owner_id, collaborator_id, role, pct) values (${trackId}, ${userId}, ${p.userId}, ${s.role}, ${s.pct})`;
+      if (wanted.has(p.userId)) throw new Invalid(`${s.handle} figure deux fois.`);
+      wanted.set(p.userId, { role: s.role, pct: s.pct, handle: s.handle });
     }
+    const invited: string[] = [];
+    for (const c of current) {
+      const w = wanted.get(c.collaboratorId);
+      if (!w) await tx`delete from track_splits where track_id = ${trackId} and collaborator_id = ${c.collaboratorId}`;
+      else if (w.role !== c.role || w.pct !== c.pct) {
+        await tx`update track_splits set role = ${w.role}, pct = ${w.pct} where track_id = ${trackId} and collaborator_id = ${c.collaboratorId}`;
+        invited.push(c.collaboratorId);
+      }
+    }
+    for (const [collaboratorId, w] of wanted) {
+      if (current.some((c) => c.collaboratorId === collaboratorId)) continue;
+      await tx`insert into track_splits (track_id, owner_id, collaborator_id, role, pct) values (${trackId}, ${userId}, ${collaboratorId}, ${w.role}, ${w.pct})`;
+      invited.push(collaboratorId);
+    }
+    return { title: t.title, invited };
   });
+  // Invitation par email (sans bloquer l'enregistrement si l'envoi échoue : elle reste visible dans « Ventes »).
+  if (invite.invited.length) {
+    const rows = await asService((tx) => tx<{ userId: string; email: string; pct: number; owner: string }[]>`
+      select u.id as "userId", u.email, s.pct::float as pct, p.display_name as owner from track_splits s
+      join users u on u.id = s.collaborator_id join profiles p on p.user_id = s.owner_id
+      where s.track_id = ${trackId} and s.collaborator_id = any(${invite.invited}::uuid[])`);
+    for (const r of rows) {
+      await sendMail({
+        to: r.email, tag: 'split_invite',
+        subject: `${r.owner} te propose ${String(r.pct).replace('.', ',')} % des ventes de ${invite.title}`,
+        text: `${r.owner} t’ajoute comme collaborateur sur « ${invite.title} » : ${String(r.pct).replace('.', ',')} % de ce qui revient aux ayants droit sur chaque vente.\n\nAccepte ou refuse dans « Ventes » :\n${env().APP_URL}/app/ventes\n\nTa part ne s’applique qu’aux ventes faites après ton accord.\n\n— Sonikc`,
+      }).catch((e) => console.error('invitation collaborateur', (e as Error).message));
+    }
+  }
   return listSplits(userId, trackId);
+}
+
+export type SplitInvite = { trackId: string; trackTitle: string; ownerName: string; ownerHandle: string; role: string; pct: number;
+  status: 'pending' | 'accepted' | 'declined'; invitedAt: Date };
+
+/** Les collaborations proposées à cet utilisateur (lues côté serveur, limitées à ses propres lignes). */
+export async function listSplitInvites(userId: string): Promise<SplitInvite[]> {
+  return asService((tx) => tx<SplitInvite[]>`
+    select s.track_id as "trackId", t.title as "trackTitle", p.display_name as "ownerName", p.handle as "ownerHandle", s.role,
+           s.pct::float as pct, s.status, s.invited_at as "invitedAt"
+    from track_splits s join tracks t on t.id = s.track_id join profiles p on p.user_id = s.owner_id
+    where s.collaborator_id = ${userId} and t.deleted_at is null and s.status <> 'declined'
+    order by s.status = 'pending' desc, s.invited_at desc limit 200`);
+}
+
+/** Le collaborateur accepte ou refuse sa part (la base refuse toute autre modification de sa part). */
+export async function respondSplit(userId: string, trackId: string, accept: unknown) {
+  uuid.parse(trackId);
+  const ok = z.boolean().parse(accept);
+  const r = await withUser(userId, (tx) => tx`update track_splits set status = ${ok ? 'accepted' : 'declined'}
+    where track_id = ${trackId} and collaborator_id = ${userId} and status = 'pending'`);
+  if (!r.count) throw new NotFound();
 }
 
 // ───────── Début du paiement ─────────
@@ -127,6 +183,7 @@ const checkoutSchema = z.object({
 
 export async function startCheckout(raw: unknown, ctx: { buyerUserId: string | null; ip: string; now?: Date }) {
   const input = checkoutSchema.parse(raw);
+  assertInvoiceReady();
   const now = ctx.now ?? new Date();
   // Limite de paiements commencés : par adresse IP si l'hébergeur la fournit, sinon par email.
   const ipHash = sha256(`ip:${ctx.ip === 'unknown' ? `email:${input.email}` : ctx.ip}:${env().APP_SECRET}`);
@@ -303,7 +360,8 @@ export async function confirmPayment(sessionId: string, now = new Date()) {
       country_conflict = ${conflict}, transfers_due_at = ${due}, refund_requested_at = ${refundReason ? now : null},
       refund_reason = ${refundReason} where id = ${o.id}`;
     const splits = o.trackId ? await tx<{ userId: string; role: string; pct: number }[]>`
-      select collaborator_id as "userId", role, pct::float as pct from track_splits where track_id = ${o.trackId} order by pct desc, collaborator_id` : [];
+      select collaborator_id as "userId", role, pct::float as pct from track_splits where track_id = ${o.trackId} and status = 'accepted'
+      order by pct desc, collaborator_id` : [];
     const shares = computeShares({ netCents: o.netCents, commissionCents: o.commissionCents, feeCents: fee, ownerId: o.sellerId, splits });
     for (const s of shares) {
       await tx`insert into order_shares (order_id, user_id, is_owner, role, pct, amount_cents)
@@ -332,8 +390,24 @@ export async function refundBySeller(userId: string, orderId: string) {
   const [o] = await withUser(userId, (tx) => tx<{ status: string }[]>`select status from orders where id = ${orderId} and seller_id = ${userId}`);
   if (!o) throw new NotFound();
   if (o.status !== 'paid') throw new Invalid('Cette vente est déjà remboursée.');
+  // Une fois une part virée, seul Sonikc peut rembourser : sinon le producteur reprendrait l'argent de ses collaborateurs.
+  const requested = await asService(async (tx) => {
+    await tx`select 1 from orders where id = ${orderId} for update`;
+    const [x] = await tx`select 1 from order_shares where order_id = ${orderId} and status = 'transferred'`;
+    if (x) return false;
+    await tx`update orders set refund_requested_at = coalesce(refund_requested_at, now()),
+      refund_reason = coalesce(refund_reason, 'Remboursé par le producteur') where id = ${orderId} and status = 'paid'`;
+    return true;
+  });
+  if (!requested) throw new Invalid('Le virement est déjà parti : pour rembourser cette vente, écris au support de Sonikc.');
+  await refundOrder(orderId);
+}
+
+/** Remboursement décidé par Sonikc (support, litige) : possible à tout moment, les parts virées sont reprises. */
+export async function refundByPlatform(orderId: string, reason: string) {
+  uuid.parse(orderId);
   await asService((tx) => tx`update orders set refund_requested_at = coalesce(refund_requested_at, now()),
-    refund_reason = coalesce(refund_reason, 'Remboursé par le producteur') where id = ${orderId} and status = 'paid'`);
+    refund_reason = coalesce(refund_reason, ${reason}) where id = ${orderId} and status = 'paid'`);
   await refundOrder(orderId);
 }
 
@@ -403,9 +477,9 @@ export async function reverseShares(orderId: string) {
  * (`sweepPayments`) reprend tout ce qui est dû : aucune part n'est abandonnée.
  */
 export async function runTransfers(orderId: string, now = new Date()) {
-  const [o] = await asService((tx) => tx<{ status: string; chargeId: string | null; due: Date | null; disputed: Date | null }[]>`
-    select status, charge_id as "chargeId", transfers_due_at as due, disputed_at as disputed from orders where id = ${orderId}`);
-  if (!o || o.status !== 'paid' || o.disputed || !o.due || o.due.getTime() > now.getTime()) return { transferred: 0, held: 0, failed: 0 };
+  const [o] = await asService((tx) => tx<{ status: string; chargeId: string | null; due: Date | null; disputed: Date | null; refunding: Date | null }[]>`
+    select status, charge_id as "chargeId", transfers_due_at as due, disputed_at as disputed, refund_requested_at as refunding from orders where id = ${orderId}`);
+  if (!o || o.status !== 'paid' || o.disputed || o.refunding || !o.due || o.due.getTime() > now.getTime()) return { transferred: 0, held: 0, failed: 0 };
   const shares = await asService((tx) => tx<{ userId: string; amountCents: number; attempts: number; accountId: string | null; active: boolean | null }[]>`
     select s.user_id as "userId", s.amount_cents as "amountCents", s.attempts, a.account_id as "accountId", a.transfers_active as active
     from order_shares s left join stripe_accounts a on a.user_id = s.user_id
@@ -533,7 +607,7 @@ async function refreshAccountById(userId: string, accountId: string) {
 export type SaleRow = {
   id: string; createdAt: Date; paidAt: Date; trackTitle: string; licenceName: string; buyerEmail: string | null; country: string;
   grossCents: number; netCents: number; vatCents: number; commissionCents: number; feeCents: number; status: string;
-  invoiceNo: string; myShareCents: number; myShareStatus: string; isSeller: boolean; transfersDueAt: Date;
+  invoiceNo: string; myShareCents: number; myShareStatus: string; isSeller: boolean; transfersDueAt: Date; refundable: boolean;
   shares: { handle: string; pct: number; amountCents: number; status: string; isOwner: boolean }[];
 };
 
@@ -543,7 +617,8 @@ export async function listSales(userId: string): Promise<SaleRow[]> {
       select o.id, o.created_at as "createdAt", o.paid_at as "paidAt", o.track_title as "trackTitle", o.licence->>'name' as "licenceName",
              case when o.seller_id = ${userId} then o.buyer_email else null end as "buyerEmail", o.country, o.gross_cents as "grossCents", o.net_cents as "netCents", o.vat_cents as "vatCents",
              o.commission_cents as "commissionCents", coalesce(o.stripe_fee_cents, 0) as "feeCents", o.status, o.invoice_no as "invoiceNo",
-             s.amount_cents as "myShareCents", s.status as "myShareStatus", o.seller_id = ${userId} as "isSeller", o.transfers_due_at as "transfersDueAt"
+             s.amount_cents as "myShareCents", s.status as "myShareStatus", o.seller_id = ${userId} as "isSeller", o.transfers_due_at as "transfersDueAt",
+             (o.seller_id = ${userId} and o.status = 'paid' and not exists (select 1 from order_shares x where x.order_id = o.id and x.status = 'transferred')) as refundable
       from orders o join order_shares s on s.order_id = o.id and s.user_id = ${userId}
       order by o.paid_at desc limit 500`;
     const ids = rows.map((r) => r.id);
