@@ -362,7 +362,15 @@ export async function confirmPayment(sessionId: string, now = new Date()) {
   if (!orderId || session.payment_status !== 'paid') return;
   const pi = session.payment_intent as Stripe.PaymentIntent | null;
   const charge = (pi?.latest_charge ?? null) as Stripe.Charge | null;
-  const bt = (charge?.balance_transaction ?? null) as Stripe.BalanceTransaction | null;
+  let bt = (charge?.balance_transaction ?? null) as Stripe.BalanceTransaction | null;
+  // Juste après le paiement, Stripe n'a pas toujours calculé ses frais : on relit la charge quelques secondes.
+  // Sans frais connus, on ne fige rien (erreur → Stripe renverra l'événement) : jamais de part calculée avec des frais faux.
+  for (let i = 0; charge && !bt && i < 5; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const c = await stripe().charges.retrieve(charge.id, { expand: ['balance_transaction'] });
+    bt = (c.balance_transaction ?? null) as Stripe.BalanceTransaction | null;
+  }
+  if (charge && !bt) throw new Error(`frais Stripe pas encore disponibles pour ${sessionId}`);
   const fee = bt?.fee ?? 0;
   const cardCountry = charge?.payment_method_details?.card?.country ?? null;
   const alreadyRefunded = Boolean(charge && charge.amount_refunded >= charge.amount);
@@ -645,9 +653,15 @@ export async function startOnboarding(userId: string, rawCountry: unknown = env(
   const acctCountry = z.string().refine((c) => Object.hasOwn(EU_VAT, c), 'Pays invalide.').parse(rawCountry);
   let [a] = await asService((tx) => tx<{ accountId: string }[]>`select account_id as "accountId" from stripe_accounts where user_id = ${userId}`);
   if (!a) {
+    // Propriétés de contrôle (au lieu de l'ancien « type ») : tableau de bord Express, informations collectées par Stripe,
+    // et Stripe porte le risque de solde négatif du compte (exigé par Stripe pour cette plateforme ; moins de risque pour Sonikc).
     const acct = await stripe().accounts.create({
-      type: 'express', country: acctCountry,
-      capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
+      country: acctCountry,
+      controller: {
+        stripe_dashboard: { type: 'express' }, requirement_collection: 'stripe',
+        losses: { payments: 'stripe' }, fees: { payer: 'account' },
+      },
+      capabilities: { transfers: { requested: true } },
       metadata: { user_id: userId },
     }, { idempotencyKey: `account-${userId}` });
     await asService((tx) => tx`insert into stripe_accounts (user_id, account_id, country) values (${userId}, ${acct.id}, ${acctCountry})

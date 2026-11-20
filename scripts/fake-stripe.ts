@@ -24,6 +24,8 @@ export type FakeStripe = {
   clearFailures(): void;
   /** Retarde la prochaine requête dont le chemin correspond (appel lent à Stripe). */
   delayNext(path: RegExp, ms: number): void;
+  /** Comme Stripe juste après un paiement : frais pas encore disponibles pendant n lectures. */
+  feeLate(reads: number): void;
   /** Envoie un événement signé quelconque (litiges…). */
   emitEvent(type: string, object: Obj): Promise<number>;
 };
@@ -57,6 +59,8 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
   const idem = new Map<string, unknown>();
   const failures: { path: RegExp; status: number; afterSuccess: boolean }[] = [];
   const delays: { path: RegExp; ms: number }[] = [];
+  let feeLateReads = 0;
+  const feeObj = (ch: Obj) => (feeLateReads > 0 ? (feeLateReads--, null) : { id: id('txn'), object: 'balance_transaction', fee: ch._fee });
   let base = '';
 
   const sign = (payload: string, timestamp?: number) =>
@@ -74,7 +78,7 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
       const pi = { ...intents.get(s.payment_intent as string)! };
       if (expand.some((e) => e.startsWith('payment_intent.latest_charge'))) {
         const ch = { ...charges.get(pi.latest_charge as string)! };
-        if (expand.includes('payment_intent.latest_charge.balance_transaction')) ch.balance_transaction = { id: id('txn'), object: 'balance_transaction', fee: ch._fee };
+        if (expand.includes('payment_intent.latest_charge.balance_transaction')) ch.balance_transaction = feeObj(ch);
         pi.latest_charge = ch;
       }
       out.payment_intent = pi;
@@ -189,6 +193,12 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
         const { line_items: _l, payment_intent_data: _p, ...pub } = expandSession(s, expand);
         return send(200, pub);
       }
+      m = /^\/v1\/charges\/([^/]+)$/.exec(url.pathname);
+      if (req.method === 'GET' && m) {
+        const ch = charges.get(m[1]);
+        if (!ch) return send(404, { error: { message: 'No such charge' } });
+        return send(200, { ...ch, balance_transaction: expand.includes('balance_transaction') ? feeObj(ch) : null });
+      }
       if (req.method === 'POST' && url.pathname === '/v1/refunds') {
         const r = await refund(body.payment_intent as string);
         return r.status === 200 ? ok(r.body) : send(r.status, r.body);
@@ -223,7 +233,12 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
         return ok(r);
       }
       if (req.method === 'POST' && url.pathname === '/v1/accounts') {
-        const a = { id: id('acct').replace('acct_test_', 'acct_'), object: 'account', type: body.type, country: body.country, details_submitted: false,
+        // Comme Stripe pour cette plateforme : l'ancien « type » est refusé, il faut les propriétés de contrôle avec Stripe porteur du risque.
+        const ctl = body.controller as { losses?: { payments?: string } } | undefined;
+        if (body.type || ctl?.losses?.payments !== 'stripe') {
+          return send(400, { error: { type: 'invalid_request_error', message: 'Use controller properties with losses collected by Stripe.' } });
+        }
+        const a = { id: id('acct').replace('acct_test_', 'acct_'), object: 'account', controller: body.controller, country: body.country, details_submitted: false,
           payouts_enabled: false, charges_enabled: false, capabilities: { transfers: 'inactive', card_payments: 'inactive' }, metadata: body.metadata ?? {} };
         accounts.set(a.id, a);
         return ok(a);
@@ -270,7 +285,8 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
       return opts.webhook(payload, sig);
     },
     async refundFromDashboard(piId) { await refund(piId, true); },
-    clearFailures() { failures.length = 0; delays.length = 0; },
+    clearFailures() { failures.length = 0; delays.length = 0; feeLateReads = 0; },
+    feeLate(reads) { feeLateReads = reads; },
     delayNext(path, ms) { delays.push({ path, ms }); },
     failNext(path, status = 500, o = {}) { failures.push({ path, status, afterSuccess: Boolean(o.afterSuccess) }); },
     emitEvent: (type, object) => emit(type, object),

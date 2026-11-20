@@ -671,3 +671,16 @@ describe('Lot 4.3 — seconde relecture : accord des collaborateurs et rembourse
     try { await expect(buy(s, s.basic.id)).rejects.toThrow('Clé Stripe réelle'); } finally { process.env.STRIPE_SECRET_KEY = key; }
   });
 });
+
+describe('Stripe réel : frais connus avec retard', () => {
+  it('les parts ne sont figées qu’avec les vrais frais Stripe, même s’ils arrivent après quelques secondes', async () => {
+    const s = await seller();
+    const c = await buy(s, s.basic.id);
+    fake.feeLate(2);
+    await pay(c.sessionId);
+    const o = await order(c.orderId);
+    expect(o.status).toBe('paid');
+    expect(o.stripe_fee_cents).toBe(Math.round(o.gross_cents * 0.015) + 25);
+    fake.clearFailures();
+  }, 20_000);
+});

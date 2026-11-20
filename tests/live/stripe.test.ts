@@ -41,8 +41,14 @@ describe.skipIf(!key)('Stripe réel (mode test)', () => {
   it('Paiement, frais, remboursement idempotent (mêmes options que Sonikc)', async () => {
     const pi = await stripe().paymentIntents.create({ amount: 3480, currency: 'eur', payment_method: 'pm_card_visa', confirm: true,
       automatic_payment_methods: { enabled: true, allow_redirects: 'never' }, transfer_group: 'smoke', metadata: { order_id: 'smoke' } });
-    const full = await stripe().paymentIntents.retrieve(pi.id, { expand: ['latest_charge.balance_transaction'] });
-    const charge = full.latest_charge as Stripe.Charge;
+    // Les frais arrivent parfois quelques secondes après le paiement : même attente que l'app.
+    const full = await stripe().paymentIntents.retrieve(pi.id, { expand: ['latest_charge'] });
+    let charge = full.latest_charge as Stripe.Charge;
+    for (let i = 0; !charge.balance_transaction && i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      charge = await stripe().charges.retrieve(charge.id);
+    }
+    charge = await stripe().charges.retrieve(charge.id, { expand: ['balance_transaction'] });
     expect((charge.balance_transaction as Stripe.BalanceTransaction).fee).toBeGreaterThan(0);
     expect(charge.payment_method_details?.card?.country).toMatch(/^[A-Z]{2}$/);
     const k = `smoke-refund-${pi.id}`;
@@ -57,7 +63,7 @@ describe.skipIf(!key)('Stripe réel (mode test)', () => {
     expect(url).toMatch(/^https:\/\/connect\.stripe\.com\//);
     const [a] = await asService((tx) => tx<{ id: string }[]>`select account_id as id from stripe_accounts where user_id = ${u.id}`);
     const acct = await stripe().accounts.retrieve(a.id);
-    expect(acct.type).toBe('express');
+    expect(acct.controller).toMatchObject({ stripe_dashboard: { type: 'express' }, losses: { payments: 'stripe' } });
     await stripe().accounts.del(a.id);
   });
 
