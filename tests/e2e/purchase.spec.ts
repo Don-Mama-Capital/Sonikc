@@ -24,7 +24,7 @@ test('achat de bout en bout (faux Stripe) : licence, paiement, fichiers, certifi
   // Le collaborateur accepte depuis « Ventes ».
   await collab.goto('/app/ventes');
   await collab.getByTestId('collab').getByTestId('accept').click();
-  await expect(collab.getByTestId('collab')).toContainText('acceptée');
+  await expect(collab.getByTestId('collab')).toContainText('en vigueur : 25 %');
   await page.reload();
   await page.getByTestId('share').click();
   await expect(page.getByTestId('my-pct')).toHaveText('75 %');

@@ -3,6 +3,7 @@
  * la phase 4 n'utilise que la commission prélevée sur les ventes.
  * Commission choisie le 20/11/2026 : 10 % sur l'offre gratuite (Sonikc encaisse, facture et gère la TVA),
  * 0 % sur les offres payantes, comme les grandes plateformes de beats. À confirmer avec les prix en phase 5.
+ * À savoir : à 0 %, les frais Stripe d'un remboursement ou d'un litige sont une perte sèche pour Sonikc (l'abonnement la couvre).
  */
 export const OFFERS = {
   free: { name: 'Gratuit', commissionPct: 10 },

@@ -65,3 +65,22 @@ Aucune fuite entre comptes. 4 problèmes hauts, 9 moyens, 6 bas : tous traités 
 - **Moyens** : marge d'expiration de la session (32 min), carte seulement (pas de paiement différé), événements dans le désordre et litiges (parts bloquées puis libérées ou reprises), parts calculées en entiers, limite d'essais d'exclusive par personne et par morceau, email de livraison renvoyé s'il échoue, désaccord entre pays déclaré et pays de la carte signalé, email de l'acheteur caché aux collaborateurs, pays du compte de reversement choisi par le producteur.
 - **Bas** : politiques publiques limitées aux morceaux et projets visibles, remboursement déjà fait chez Stripe accepté, seules les vraies erreurs de signature refusent un webhook, fichiers livrés rangés par empreinte (jamais écrasés), plus de chaînes de tâches en double.
 - **À trancher par le propriétaire** : frais Stripe perdus par Sonikc lors d'un remboursement ; un producteur peut rembourser après le virement, ce qui reprend aussi la part des collaborateurs ; un producteur peut ajouter n'importe quel identifiant comme collaborateur sans son accord.
+
+### Choix du propriétaire (20 novembre) et seconde relecture
+
+Consigne : le plus optimal pour Sonikc et pour les utilisateurs.
+
+1. Paiement écrit par le serveur : gardé (la règle du fichier `CLAUDE.md` reste à mettre à jour avec l'accord explicite du propriétaire).
+2. Commission : Gratuit 10 %, Pro 0 %, Studio 0 % (`src/config/offers.ts`), à confirmer avec les prix en phase 5.
+3. Licences non livrables masquées : gardé ; livraison des stems au registre.
+4. Frais Stripe d'un remboursement : à la charge de Sonikc pour l'instant ; à fixer dans le mandat producteurs.
+5. Factures : le mode des factures suit celui de la clé Stripe ; vente réelle refusée tant qu'une mention légale manque.
+6. Remboursement par le producteur jusqu'au virement seulement (ni virement en cours, ni réponse de Stripe perdue) ; ensuite par Sonikc.
+7. Accord des collaborateurs (migration 0012) : invitation à accepter ; la part ne s'applique qu'après accord ; de nouvelles conditions
+   redemandent l'accord et les anciennes restent en vigueur d'ici là ; refus ou retrait possibles ; une ligne ne peut jamais être
+   déplacée vers une autre personne ou un autre morceau ; droits de modification par colonne ; une invitation par personne et par 24 h.
+
+Seconde relecture indépendante : 2 hauts (acceptation déplaçable en base ; remboursement pouvant s'intercaler pendant un virement),
+4 moyens (réponse de Stripe perdue, invitations abusives, réponse sur des conditions changées, dates modifiables), 4 bas : tous corrigés
+et testés (réservation « virement en cours » sous verrou, vérification chez Stripe des virements douteux, retard et pannes simulés).
+178 tests et 19 parcours Chrome au vert.

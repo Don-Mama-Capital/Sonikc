@@ -22,6 +22,8 @@ export type FakeStripe = {
   /** Fait échouer la prochaine requête dont le chemin correspond (panne de Stripe simulée). */
   failNext(path: RegExp, status?: number, opts?: { afterSuccess?: boolean }): void;
   clearFailures(): void;
+  /** Retarde la prochaine requête dont le chemin correspond (appel lent à Stripe). */
+  delayNext(path: RegExp, ms: number): void;
   /** Envoie un événement signé quelconque (litiges…). */
   emitEvent(type: string, object: Obj): Promise<number>;
 };
@@ -54,6 +56,7 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
   const transfers: Obj[] = [], reversals: Obj[] = [], refunds: Obj[] = [], events: Obj[] = [];
   const idem = new Map<string, unknown>();
   const failures: { path: RegExp; status: number; afterSuccess: boolean }[] = [];
+  const delays: { path: RegExp; ms: number }[] = [];
   let base = '';
 
   const sign = (payload: string, timestamp?: number) =>
@@ -145,6 +148,8 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
       }
 
       // ── API ──
+      const d = delays.findIndex((x) => x.path.test(url.pathname) && req.method === 'POST');
+      if (d >= 0) { const [delay] = delays.splice(d, 1); await new Promise((r) => setTimeout(r, delay.ms)); }
       // Panne simulée : erreur avant traitement, ou traitement fait mais réponse perdue (afterSuccess).
       const f = failures.findIndex((x) => x.path.test(url.pathname));
       let loseResponse = false;
@@ -154,7 +159,10 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
         loseResponse = true;
       }
       const key = req.headers['idempotency-key'] as string | undefined;
-      if (key && req.method === 'POST' && idem.has(`${url.pathname}|${key}`)) return send(200, idem.get(`${url.pathname}|${key}`));
+      if (key && req.method === 'POST' && idem.has(`${url.pathname}|${key}`)) {
+        if (loseResponse) return send(500, { error: { type: 'api_error', message: 'fake-stripe: réponse perdue' } });
+        return send(200, idem.get(`${url.pathname}|${key}`));
+      }
       const body = req.method === 'POST' ? parseForm(raw) : {};
       const expand = [...url.searchParams].filter(([k]) => k.startsWith('expand')).map(([, v]) => v).concat((body.expand as string[]) ?? []);
       const ok = (o: unknown) => {
@@ -262,7 +270,8 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
       return opts.webhook(payload, sig);
     },
     async refundFromDashboard(piId) { await refund(piId, true); },
-    clearFailures() { failures.length = 0; },
+    clearFailures() { failures.length = 0; delays.length = 0; },
+    delayNext(path, ms) { delays.push({ path, ms }); },
     failNext(path, status = 500, o = {}) { failures.push({ path, status, afterSuccess: Boolean(o.afterSuccess) }); },
     emitEvent: (type, object) => emit(type, object),
   };

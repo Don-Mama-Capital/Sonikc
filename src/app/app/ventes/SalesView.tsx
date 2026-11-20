@@ -24,6 +24,12 @@ export function SalesView() {
   }, []);
   useEffect(() => { load().catch((e) => setMsg({ ok: false, text: e.message })); }, [load]);
   const [country, setCountry] = useState('FR');
+  const answer = async (i: SplitInvite, accept: boolean) => {
+    setMsg(null);
+    try { await api(`/api/splits/${i.trackId}`, { method: 'POST', body: { accept, pct: i.pct, role: i.role, invitedAt: i.invitedAt } }); }
+    catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
+    await load();
+  };
   const onboard = async () => {
     setMsg(null);
     try { const { url } = await api<{ url: string }>('/api/connect', { method: 'POST', body: { country } }); window.location.href = url; }
@@ -69,15 +75,25 @@ export function SalesView() {
               <li key={i.trackId} className="card flex flex-wrap items-center justify-between gap-3 p-4 text-sm" data-testid="collab">
                 <span className="min-w-0">
                   <span className="block font-medium">{i.trackTitle} <span className="font-normal text-mute">· par {i.ownerName} (@{i.ownerHandle})</span></span>
-                  <span className="block text-mute">{String(i.pct).replace('.', ',')} % de chaque vente{i.role && ` · ${i.role}`}
-                    {i.status === 'accepted' ? ' · acceptée' : ' · s’applique aux ventes faites après ton accord'}</span>
+                  <span className="block text-mute">
+                    {i.status === 'pending' ? `Proposition : ${String(i.pct).replace('.', ',')} % de chaque vente${i.role ? ` · ${i.role}` : ''} · s’applique aux ventes faites après ton accord`
+                      : `${String(i.pct).replace('.', ',')} % de chaque vente${i.role ? ` · ${i.role}` : ''}`}
+                    {i.acceptedPct != null && ` · en vigueur : ${String(i.acceptedPct).replace('.', ',')} %`}</span>
                 </span>
-                {i.status === 'pending' && (
-                  <span className="flex gap-2">
-                    <button className="btn-primary" data-testid="accept" onClick={async () => { await api(`/api/splits/${i.trackId}`, { method: 'POST', body: { accept: true } }); await load(); }}>Accepter</button>
-                    <button className="btn-ghost" onClick={async () => { await api(`/api/splits/${i.trackId}`, { method: 'POST', body: { accept: false } }); await load(); }}>Refuser</button>
-                  </span>
-                )}
+                <span className="flex gap-2">
+                  {i.status === 'pending' && <>
+                    <button className="btn-primary" data-testid="accept" onClick={() => answer(i, true)}>Accepter</button>
+                    <button className="btn-ghost" data-testid="decline" onClick={() => {
+                      if (confirm(`Refuser ${String(i.pct).replace('.', ',')} % des ventes de « ${i.trackTitle} » ?${i.acceptedPct != null ? ' Ta part actuelle reste en vigueur.' : ''}`)) answer(i, false);
+                    }}>Refuser</button>
+                  </>}
+                  {i.acceptedPct != null && (
+                    <button className="text-sm text-mute underline hover:text-text" data-testid="withdraw" onClick={async () => {
+                      if (!confirm(`Te retirer de « ${i.trackTitle} » ? Ta part ne s’appliquera plus aux ventes suivantes. Ce qui t’est déjà dû reste à toi.`)) return;
+                      await api(`/api/splits/${i.trackId}`, { method: 'DELETE' }); await load();
+                    }}>Me retirer</button>
+                  )}
+                </span>
               </li>
             ))}
           </ul>

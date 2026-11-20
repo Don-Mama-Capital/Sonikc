@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/client/api';
 
-type Split = { handle: string; displayName?: string; role: string; pct: number; payoutsReady?: boolean; status?: 'pending' | 'accepted' | 'declined' };
-const STATUS = { pending: 'en attente de son accord', accepted: 'acceptée', declined: 'refusée' } as const;
+type Split = { handle: string; displayName?: string; role: string; pct: number; payoutsReady?: boolean; status?: 'pending' | 'accepted' | 'declined' | 'withdrawn'; acceptedPct?: number | null };
+const STATUS = { pending: 'en attente de son accord', accepted: 'acceptée', declined: 'refusée', withdrawn: 's’est retiré' } as const;
+const fr = (n: number) => String(n).replace('.', ',');
 
 /** Collaborateurs d'un morceau en vente : leur part des revenus (le reste revient au propriétaire). */
 export function TrackSplits({ trackId }: { trackId: string }) {
@@ -20,7 +21,7 @@ export function TrackSplits({ trackId }: { trackId: string }) {
   };
   if (!rows) return null;
   // Ta part réelle aujourd'hui : seules les parts acceptées s'appliquent aux ventes.
-  const mine = Math.round((100 - rows.filter((r) => r.status === 'accepted').reduce((a, r) => a + r.pct, 0)) * 100) / 100;
+  const mine = Math.round((100 - rows.reduce((a, r) => a + (r.acceptedPct ?? 0), 0)) * 100) / 100;
   return (
     <div className="space-y-2" data-testid="track-splits">
       <p className="label">Collaborateurs</p>
@@ -29,9 +30,10 @@ export function TrackSplits({ trackId }: { trackId: string }) {
         {rows.map((r) => (
           <li key={r.handle} className="flex items-center justify-between gap-2">
             <span className="min-w-0 truncate">@{r.handle}{r.role && <span className="text-mute"> · {r.role}</span>}
-              {r.status && <span className={`text-xs ${r.status === 'declined' ? 'text-bad' : 'text-mute'}`} data-testid="split-status"> · {STATUS[r.status]}</span>}
+              {r.status && <span className={`text-xs ${r.status === 'declined' || r.status === 'withdrawn' ? 'text-bad' : 'text-mute'}`} data-testid="split-status"> · {STATUS[r.status]}</span>}
+              {r.status !== 'accepted' && r.acceptedPct != null && <span className="text-xs text-mute"> · {fr(r.acceptedPct)} % toujours en vigueur</span>}
               {r.status === 'accepted' && !r.payoutsReady && <span className="text-xs text-mute"> · reversements pas encore activés</span>}</span>
-            <span className="flex items-center gap-2">{String(r.pct).replace('.', ',')} %
+            <span className="flex items-center gap-2">{fr(r.pct)} %
               <button className="text-xs text-mute underline hover:text-text" onClick={() => save(rows.filter((x) => x.handle !== r.handle))}>Retirer</button></span>
           </li>
         ))}
@@ -45,7 +47,7 @@ export function TrackSplits({ trackId }: { trackId: string }) {
         <input className="input max-w-20" placeholder="%" aria-label="Part en %" inputMode="decimal" value={draft.pct} required onChange={(e) => setDraft({ ...draft, pct: e.target.value })} />
         <button className="btn-ghost" type="submit">Ajouter</button>
       </form>
-      <p className="text-xs text-mute">Chaque collaborateur reçoit une invitation : sa part s’applique aux ventes faites après son accord. Parts calculées sur ce qui reste après TVA, commission et frais de paiement, virées sur son propre compte de reversement.</p>
+      <p className="text-xs text-mute">Chaque collaborateur reçoit une invitation : sa part s’applique aux ventes faites après son accord. Si tu changes une part, l’ancienne reste en vigueur jusqu’à son nouvel accord. Parts calculées sur ce qui reste après TVA, commission et frais de paiement, virées sur son propre compte de reversement.</p>
       {error && <p role="alert" className="text-sm text-bad">{error}</p>}
     </div>
   );

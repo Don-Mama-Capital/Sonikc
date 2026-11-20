@@ -10,7 +10,7 @@ import { store } from '@/lib/server/storage';
 import { sha256 } from '@/lib/server/crypto';
 import {
   commissionCents, computeShares, confirmPayment, handleWebhook, listPurchases, listSales, orderFile, orderView, parseOrderToken,
-  refreshAccount, refundByPlatform, refundBySeller, respondSplit, listSplits, listSplitInvites, runTransfers, setSplits, startCheckout, startOnboarding, sweepPayments,
+  refreshAccount, refundByPlatform, refundBySeller, respondSplit, listSplits, listSplitInvites, withdrawSplit, runTransfers, setSplits, startCheckout, startOnboarding, sweepPayments,
 } from '@/lib/server/commerce';
 import { OFFERS } from '@/config/offers';
 import { startFakeStripe, type FakeStripe } from '../../scripts/fake-stripe';
@@ -158,7 +158,7 @@ describe('Lot 4.3 — paiement (faux Stripe)', () => {
       const s = await seller(plan);
       const a = await makeUser(); const b = await makeUser();
       await setSplits(s.id, s.trackId, [{ handle: a.handle, role: 'Co-prod', pct: 33.33 }, { handle: b.handle, role: 'Topline', pct: 20 }]);
-      await respondSplit(a.id, s.trackId, true); await respondSplit(b.id, s.trackId, true);
+      await answer(a.id, s.trackId, true); await answer(b.id, s.trackId, true);
       const c = await buy(s, s.premium.id, { country: 'FR' });
       await pay(c.sessionId);
       const o = await order(c.orderId);
@@ -184,7 +184,7 @@ describe('Lot 4.3 — paiement (faux Stripe)', () => {
     const s = await seller('pro');
     const collab = await makeUser();
     await setSplits(s.id, s.trackId, [{ handle: collab.handle, pct: 25 }]);
-    await respondSplit(collab.id, s.trackId, true);
+    await answer(collab.id, s.trackId, true);
     for (const u of [s.id, collab.id]) { const { url } = await startOnboarding(u); fake.activate(/onboard\/([^?]+)/.exec(url)![1]); await refreshAccount(u); }
 
     const early = await buy(s, s.basic.id);
@@ -319,12 +319,19 @@ describe('Lot 4.4 — certificat', () => {
   });
 });
 
+/** Le collaborateur répond à la proposition telle qu'il la voit dans « Ventes ». */
+async function answer(userId: string, trackId: string, accept: boolean) {
+  const i = (await listSplitInvites(userId)).find((x) => x.trackId === trackId);
+  if (!i) throw new Error('aucune invitation');
+  await respondSplit(userId, trackId, { accept, pct: i.pct, role: i.role, invitedAt: i.invitedAt });
+}
+
 /** Producteur et collaborateur avec comptes de reversement actifs. */
 async function activeSeller() {
   const s = await seller('pro');
   const collab = await makeUser();
   await setSplits(s.id, s.trackId, [{ handle: collab.handle, pct: 25 }]);
-  await respondSplit(collab.id, s.trackId, true);
+  await answer(collab.id, s.trackId, true);
   for (const u of [s.id, collab.id]) { const { url } = await startOnboarding(u); fake.activate(/onboard\/([^?]+)/.exec(url)![1]); await refreshAccount(u); }
   return { ...s, collab };
 }
@@ -514,7 +521,7 @@ describe('Lot 4.3 — choix du 20/11 : accord des collaborateurs, remboursement 
     expect(mails.some((m) => m.to === a.email && m.tag === 'split_invite')).toBe(true);
     // Le propriétaire ne peut pas accepter à sa place ; un inconnu ne peut pas répondre ; le collaborateur ne change pas sa part.
     await expect(withUser(s.id, (tx) => tx`update track_splits set status = 'accepted' where track_id = ${s.trackId}`)).rejects.toThrow('only the collaborator');
-    await expect(respondSplit((await makeUser()).id, s.trackId, true)).rejects.toThrow();
+    await expect(respondSplit((await makeUser()).id, s.trackId, { accept: true, pct: 30, role: '', invitedAt: new Date().toISOString() })).rejects.toThrow();
     await expect(withUser(a.id, (tx) => tx`update track_splits set pct = 90 where track_id = ${s.trackId} and collaborator_id = ${a.id}`)).rejects.toThrow('belong to the owner');
     const c3 = await makeUser();
     await withUser(s.id, (tx) => tx`insert into track_splits (track_id, owner_id, collaborator_id, pct, status) values (${s.trackId}, ${s.id}, ${c3.id}, 5, 'accepted')`);
@@ -524,9 +531,9 @@ describe('Lot 4.3 — choix du 20/11 : accord des collaborateurs, remboursement 
     const c1 = await buy(s, s.basic.id); await pay(c1.sessionId);
     expect((await shares(c1.orderId)).map((x) => x.isOwner)).toEqual([true]);
     // A accepte, B refuse : seule la part de A s'applique ; la part refusée ne compte plus dans le total.
-    await respondSplit(a.id, s.trackId, true);
-    await respondSplit(b.id, s.trackId, false);
-    await expect(respondSplit(a.id, s.trackId, false)).rejects.toThrow(); // déjà répondu
+    await answer(a.id, s.trackId, true);
+    await answer(b.id, s.trackId, false);
+    await expect(answer(a.id, s.trackId, false)).rejects.toThrow(); // déjà répondu
     const c2 = await buy(s, s.basic.id); await pay(c2.sessionId);
     expect((await shares(c2.orderId)).map((x) => [x.isOwner, x.pct])).toEqual([[true, 70], [false, 30]]);
     // Changer le pourcentage redemande l'accord ; une ligne inchangée garde la réponse.
@@ -545,5 +552,122 @@ describe('Lot 4.3 — choix du 20/11 : accord des collaborateurs, remboursement 
     expect((await order(c.orderId)).refund_requested_at).toBeNull();
     // Commission : offre Pro à 0 %.
     expect((await order(c.orderId)).commission_cents).toBe(0);
+  });
+});
+
+describe('Lot 4.3 — seconde relecture : accord des collaborateurs et remboursements', () => {
+  beforeEach(() => fake.clearFailures());
+  const mailsTo = async (email: string, tag: string) => {
+    const dir = process.env.MAIL_DIR!;
+    const all = await Promise.all((await readdir(dir)).map(async (f) => JSON.parse(await readFile(path.join(dir, f), 'utf8'))));
+    return all.filter((m) => m.to === email && m.tag === tag);
+  };
+
+  it('H1/M4. une acceptation ne se déplace pas ; dates et réponses verrouillées', async () => {
+    const s = await seller(); const other = await seller();
+    const a = await makeUser(); const x = await makeUser();
+    await setSplits(s.id, s.trackId, [{ handle: a.handle, pct: 10 }]);
+    await answer(a.id, s.trackId, true);
+    await expect(withUser(s.id, (tx) => tx`update track_splits set collaborator_id = ${x.id} where track_id = ${s.trackId}`)).rejects.toThrow('permission denied');
+    await expect(withUser(s.id, (tx) => tx`update track_splits set track_id = ${other.trackId} where track_id = ${s.trackId}`)).rejects.toThrow('permission denied');
+    await expect(asService((tx) => tx`update track_splits set collaborator_id = ${x.id} where track_id = ${s.trackId}`)).rejects.toThrow('cannot be moved');
+    await expect(withUser(a.id, (tx) => tx`update track_splits set invited_at = now() - interval '1 year' where track_id = ${s.trackId}`)).rejects.toThrow('permission denied');
+    await expect(withUser(s.id, (tx) => tx`update track_splits set responded_at = now() where track_id = ${s.trackId}`)).rejects.toThrow('permission denied');
+    // Refus définitif pour ces conditions : pas de retour direct à « accepté ».
+    const b = await makeUser();
+    await setSplits(s.id, s.trackId, [{ handle: a.handle, pct: 10 }, { handle: b.handle, pct: 20 }]);
+    await answer(b.id, s.trackId, false);
+    await expect(withUser(b.id, (tx) => tx`update track_splits set status = 'accepted' where track_id = ${s.trackId} and collaborator_id = ${b.id}`)).rejects.toThrow('invalid split answer');
+  });
+
+  it('nouvelles conditions : les anciennes restent en vigueur jusqu’à l’accord ; retrait ; ligne inchangée ; retirer puis rajouter', async () => {
+    const s = await seller();
+    const a = await makeUser(); const b = await makeUser(); const c = await makeUser();
+    await setSplits(s.id, s.trackId, [{ handle: a.handle, role: 'Co-prod', pct: 30 }, { handle: b.handle, pct: 20 }]);
+    await answer(a.id, s.trackId, true); await answer(b.id, s.trackId, true);
+    // Ligne inchangée : reste acceptée. Rôle changé : redemande l'accord, 30 % restent en vigueur.
+    await setSplits(s.id, s.trackId, [{ handle: a.handle, role: 'Mix', pct: 30 }, { handle: b.handle, pct: 20 }]);
+    let rows = await listSplits(s.id, s.trackId);
+    expect(rows.map((r) => [r.handle, r.status, r.acceptedPct])).toEqual([[a.handle, 'pending', 30], [b.handle, 'accepted', 20]]);
+    const c1 = await buy(s, s.basic.id); await pay(c1.sessionId);
+    expect((await shares(c1.orderId)).map((r) => [r.isOwner, r.pct])).toEqual([[true, 50], [false, 30], [false, 20]]);
+    // Proposition à la hausse refusée : l'ancienne part reste en vigueur.
+    await setSplits(s.id, s.trackId, [{ handle: a.handle, role: 'Mix', pct: 40 }, { handle: b.handle, pct: 20 }]);
+    await answer(a.id, s.trackId, false);
+    rows = await listSplits(s.id, s.trackId);
+    expect(rows.find((r) => r.handle === a.handle)).toMatchObject({ status: 'declined', acceptedPct: 30 });
+    // Retrait de B : sa part cesse de s'appliquer ; la place libérée peut être proposée à C.
+    await withdrawSplit(b.id, s.trackId);
+    await setSplits(s.id, s.trackId, [{ handle: a.handle, role: 'Mix', pct: 40 }, { handle: b.handle, pct: 20 }, { handle: c.handle, pct: 50 }]);
+    const c2 = await buy(s, s.basic.id); await pay(c2.sessionId);
+    expect((await shares(c2.orderId)).map((r) => [r.isOwner, r.pct])).toEqual([[true, 70], [false, 30]]);
+    // Retirer puis rajouter : nouvelle invitation, rien en vigueur.
+    await setSplits(s.id, s.trackId, [{ handle: c.handle, pct: 50 }]);
+    await setSplits(s.id, s.trackId, [{ handle: c.handle, pct: 50 }, { handle: a.handle, pct: 10 }]);
+    expect((await listSplits(s.id, s.trackId)).find((r) => r.handle === a.handle)).toMatchObject({ status: 'pending', acceptedPct: null });
+    // Réponse à une proposition qui a changé entre-temps : refusée.
+    const seen = (await listSplitInvites(c.id))[0];
+    await setSplits(s.id, s.trackId, [{ handle: c.handle, pct: 5 }, { handle: a.handle, pct: 10 }]);
+    await expect(respondSplit(c.id, s.trackId, { accept: true, pct: seen.pct, role: seen.role, invitedAt: seen.invitedAt })).rejects.toThrow('a changé');
+  });
+
+  it('M2. invitations limitées : une par personne et par 24 h, texte sur une ligne', async () => {
+    const s = await seller();
+    await asService((tx) => tx`update tracks set title = ${'Titre\r\nBcc: x@evil.example'} where id = ${s.trackId}`);
+    const a = await makeUser();
+    for (const pct of [10, 10.01, 10, 12]) await setSplits(s.id, s.trackId, [{ handle: a.handle, pct }]);
+    await setSplits(s.id, s.trackId, []);
+    await setSplits(s.id, s.trackId, [{ handle: a.handle, pct: 15 }]);
+    const mails = await mailsTo(a.email, 'split_invite');
+    expect(mails).toHaveLength(1);
+    expect(mails[0].subject).not.toMatch(/[\r\n]/);
+  });
+
+  it('H2. un remboursement par le producteur ne peut pas s’intercaler pendant un virement', async () => {
+    const s = await activeSeller();
+    const c = await buy(s, s.basic.id);
+    await pay(c.sessionId);
+    fake.delayNext(/^\/v1\/transfers$/, 600);
+    const running = runTransfers(c.orderId, later(15));
+    await sleep(150);
+    await expect(refundBySeller(s.id, c.orderId)).rejects.toThrow('support de Sonikc');
+    await running;
+    expect((await order(c.orderId)).status).toBe('paid');
+    expect((await shares(c.orderId)).every((r) => r.status === 'transferred')).toBe(true);
+  });
+
+  it('M1. réponse de Stripe perdue : plus de remboursement par le producteur ; Sonikc rembourse et reprend le virement parti', async () => {
+    const s = await activeSeller();
+    const c = await buy(s, s.basic.id);
+    await pay(c.sessionId);
+    for (let i = 0; i < 3; i++) fake.failNext(/^\/v1\/transfers$/, 500, { afterSuccess: true });
+    const r0 = await runTransfers(c.orderId, later(15));
+    expect(r0).toMatchObject({ transferred: 1, failed: 1 });
+    expect((await shares(c.orderId)).some((r) => r.status === 'scheduled')).toBe(true);
+    await expect(refundBySeller(s.id, c.orderId)).rejects.toThrow('support de Sonikc');
+    expect((await listSales(s.id))[0].refundable).toBe(false);
+    await refundByPlatform(c.orderId, 'Remboursé par le support');
+    await sweepPayments(later(16));
+    const sent = fake.state.transfers.filter((t) => (t.metadata as Record<string, string>).order_id === c.orderId);
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sent.every((t) => t.reversed)).toBe(true);
+  });
+
+  it('remboursement par Sonikc avant virement ; virements jamais lancés pendant un remboursement demandé', async () => {
+    const s = await activeSeller();
+    const c = await buy(s, s.basic.id);
+    await pay(c.sessionId);
+    await asService((tx) => tx`update orders set refund_requested_at = now() where id = ${c.orderId}`);
+    expect(await runTransfers(c.orderId, later(15))).toEqual({ transferred: 0, held: 0, failed: 0 });
+    await refundByPlatform(c.orderId, 'Remboursé par le support');
+    expect((await order(c.orderId)).status).toBe('refunded');
+    expect((await shares(c.orderId)).map((r) => r.status)).toEqual(['canceled', 'canceled']);
+  });
+
+  it('les factures suivent le mode de Stripe (clé réelle refusée en mode test)', async () => {
+    const s = await seller();
+    const key = process.env.STRIPE_SECRET_KEY;
+    process.env.STRIPE_SECRET_KEY = 'sk_live_x';
+    try { await expect(buy(s, s.basic.id)).rejects.toThrow('Clé Stripe réelle'); } finally { process.env.STRIPE_SECRET_KEY = key; }
   });
 });

@@ -82,40 +82,47 @@ const splitsSchema = z.array(z.object({
   pct: z.number().positive().max(100).multipleOf(0.01),
 })).max(10);
 
-export async function listSplits(userId: string, trackId: string) {
+export type SplitRow = { handle: string; displayName: string; role: string; pct: number; status: 'pending' | 'accepted' | 'declined' | 'withdrawn';
+  acceptedPct: number | null; payoutsReady: boolean };
+
+export async function listSplits(userId: string, trackId: string): Promise<SplitRow[]> {
   uuid.parse(trackId);
   return withUser(userId, async (tx) => {
     const [t] = await tx`select 1 from tracks where id = ${trackId}`;
     if (!t) throw new NotFound();
-    return tx<{ handle: string; displayName: string; role: string; pct: number; status: 'pending' | 'accepted' | 'declined'; payoutsReady: boolean }[]>`
-      select p.handle, p.display_name as "displayName", s.role, s.pct::float as pct, s.status,
+    return tx<SplitRow[]>`
+      select p.handle, p.display_name as "displayName", s.role, s.pct::float as pct, s.status, s.accepted_pct::float as "acceptedPct",
              exists (select 1 from stripe_accounts a where a.user_id = s.collaborator_id and a.transfers_active) as "payoutsReady"
       from track_splits s join profiles p on p.user_id = s.collaborator_id
       where s.track_id = ${trackId} order by s.pct desc`;
   });
 }
 
+const INVITES_PER_OWNER_PER_DAY = 30;
+const oneLine = (s: string, max: number) => s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+
 /**
  * Met à jour la liste des collaborateurs d'un morceau (par identifiant Sonikc). Une ligne inchangée garde la réponse
- * du collaborateur ; une nouvelle ligne, ou un pourcentage ou rôle changé, lui redemande son accord (la base l'impose)
- * et lui envoie une invitation. Total ≤ 100 % hors parts refusées (contrôlé par la base).
+ * du collaborateur ; une nouvelle ligne, ou un pourcentage ou rôle changé, lui redemande son accord (la base l'impose).
+ * Les conditions déjà acceptées restent en vigueur d'ici là. Invitation par email : au plus une par personne et par
+ * producteur toutes les 24 h, et 30 par producteur et par jour.
  */
 export async function setSplits(userId: string, trackId: string, raw: unknown) {
   uuid.parse(trackId);
   const list = splitsSchema.parse(raw);
-  if (list.reduce((a, s) => a + s.pct, 0) > 100) throw new Invalid('Le total des parts dépasse 100 %.');
+  // Total ≤ 100 % vérifié par la base à la fin de la transaction (parts refusées ou retirées exclues, parts en vigueur comprises).
   const invite = await withUser(userId, async (tx) => {
     const [t] = await tx<{ title: string }[]>`select title from tracks where id = ${trackId}`;
     if (!t) throw new NotFound();
     const current = await tx<{ collaboratorId: string; role: string; pct: number }[]>`
       select collaborator_id as "collaboratorId", role, pct::float as pct from track_splits where track_id = ${trackId}`;
-    const wanted = new Map<string, { role: string; pct: number; handle: string }>();
+    const wanted = new Map<string, { role: string; pct: number }>();
     for (const s of list) {
       const [p] = await tx<{ userId: string }[]>`select user_id as "userId" from profiles where lower(handle) = ${s.handle.toLowerCase().replace(/^@/, '')}`;
       if (!p) throw new Invalid(`Identifiant inconnu : ${s.handle}`);
       if (p.userId === userId) throw new Invalid('Ta propre part est le reste : ne t’ajoute pas comme collaborateur.');
       if (wanted.has(p.userId)) throw new Invalid(`${s.handle} figure deux fois.`);
-      wanted.set(p.userId, { role: s.role, pct: s.pct, handle: s.handle });
+      wanted.set(p.userId, { role: s.role, pct: s.pct });
     }
     const invited: string[] = [];
     for (const c of current) {
@@ -132,43 +139,74 @@ export async function setSplits(userId: string, trackId: string, raw: unknown) {
       invited.push(collaboratorId);
     }
     return { title: t.title, invited };
+  }).catch((e) => {
+    if (String((e as Error).message).includes('splits exceed')) throw new Invalid('Le total des parts dépasse 100 %.');
+    throw e;
   });
-  // Invitation par email (sans bloquer l'enregistrement si l'envoi échoue : elle reste visible dans « Ventes »).
-  if (invite.invited.length) {
-    const rows = await asService((tx) => tx<{ userId: string; email: string; pct: number; owner: string }[]>`
-      select u.id as "userId", u.email, s.pct::float as pct, p.display_name as owner from track_splits s
-      join users u on u.id = s.collaborator_id join profiles p on p.user_id = s.owner_id
-      where s.track_id = ${trackId} and s.collaborator_id = any(${invite.invited}::uuid[])`);
-    for (const r of rows) {
-      await sendMail({
-        to: r.email, tag: 'split_invite',
-        subject: `${r.owner} te propose ${String(r.pct).replace('.', ',')} % des ventes de ${invite.title}`,
-        text: `${r.owner} t’ajoute comme collaborateur sur « ${invite.title} » : ${String(r.pct).replace('.', ',')} % de ce qui revient aux ayants droit sur chaque vente.\n\nAccepte ou refuse dans « Ventes » :\n${env().APP_URL}/app/ventes\n\nTa part ne s’applique qu’aux ventes faites après ton accord.\n\n— Sonikc`,
-      }).catch((e) => console.error('invitation collaborateur', (e as Error).message));
-    }
-  }
+  if (invite.invited.length) await sendSplitInvites(userId, trackId, invite.title, invite.invited);
   return listSplits(userId, trackId);
 }
 
-export type SplitInvite = { trackId: string; trackTitle: string; ownerName: string; ownerHandle: string; role: string; pct: number;
-  status: 'pending' | 'accepted' | 'declined'; invitedAt: Date };
-
-/** Les collaborations proposées à cet utilisateur (lues côté serveur, limitées à ses propres lignes). */
-export async function listSplitInvites(userId: string): Promise<SplitInvite[]> {
-  return asService((tx) => tx<SplitInvite[]>`
-    select s.track_id as "trackId", t.title as "trackTitle", p.display_name as "ownerName", p.handle as "ownerHandle", s.role,
-           s.pct::float as pct, s.status, s.invited_at as "invitedAt"
-    from track_splits s join tracks t on t.id = s.track_id join profiles p on p.user_id = s.owner_id
-    where s.collaborator_id = ${userId} and t.deleted_at is null and s.status <> 'declined'
-    order by s.status = 'pending' desc, s.invited_at desc limit 200`);
+async function sendSplitInvites(ownerId: string, trackId: string, title: string, collaboratorIds: string[]) {
+  const toSend = await asService(async (tx) => {
+    await tx`select pg_advisory_xact_lock(hashtext(${`split-invites:${ownerId}`}))`;
+    const [{ today }] = await tx<{ today: number }[]>`select count(*)::int as today from split_invite_log
+      where owner_id = ${ownerId} and sent_at > now() - interval '1 day'`;
+    const recent = await tx<{ id: string }[]>`select distinct collaborator_id as id from split_invite_log
+      where owner_id = ${ownerId} and collaborator_id = any(${collaboratorIds}::uuid[]) and sent_at > now() - interval '1 day'`;
+    const ids = collaboratorIds.filter((id) => !recent.some((r) => r.id === id)).slice(0, Math.max(0, INVITES_PER_OWNER_PER_DAY - today));
+    for (const id of ids) await tx`insert into split_invite_log (owner_id, collaborator_id) values (${ownerId}, ${id})`;
+    return ids.length ? tx<{ email: string; pct: number; owner: string }[]>`
+      select u.email, s.pct::float as pct, p.display_name as owner from track_splits s
+      join users u on u.id = s.collaborator_id join profiles p on p.user_id = s.owner_id
+      where s.track_id = ${trackId} and s.collaborator_id = any(${ids}::uuid[]) and s.status = 'pending'` : [];
+  });
+  const name = oneLine(title, 80), owner = (o: string) => oneLine(o, 60);
+  for (const r of toSend) {
+    const pct = String(r.pct).replace('.', ',');
+    await sendMail({
+      to: r.email, tag: 'split_invite',
+      subject: oneLine(`Invitation de collaboration sur Sonikc : ${pct} % des ventes de « ${name} »`, 150),
+      text: `${owner(r.owner)} (producteur sur Sonikc) te propose ${pct} % de ce qui revient aux ayants droit sur chaque vente du morceau « ${name} ».\n\nRéponds dans ton espace Sonikc, rubrique « Ventes » :\n${env().APP_URL}/app/ventes\n\nTa part ne s’applique qu’aux ventes faites après ton accord. Si tu ne connais pas ce producteur, refuse simplement.\n\n— Sonikc`,
+    }).catch((e) => console.error('invitation collaborateur', (e as Error).message));
+  }
 }
 
-/** Le collaborateur accepte ou refuse sa part (la base refuse toute autre modification de sa part). */
-export async function respondSplit(userId: string, trackId: string, accept: unknown) {
+export type SplitInvite = { trackId: string; trackTitle: string; ownerName: string; ownerHandle: string; role: string; pct: number;
+  status: 'pending' | 'accepted' | 'declined' | 'withdrawn'; acceptedPct: number | null; invitedAt: string };
+
+/** Les collaborations proposées à cet utilisateur ou en vigueur (lues côté serveur, limitées à ses propres lignes). */
+export async function listSplitInvites(userId: string): Promise<SplitInvite[]> {
+  const rows = await asService((tx) => tx<(Omit<SplitInvite, 'invitedAt'> & { invitedAt: Date })[]>`
+    select s.track_id as "trackId", t.title as "trackTitle", p.display_name as "ownerName", p.handle as "ownerHandle", s.role,
+           s.pct::float as pct, s.status, s.accepted_pct::float as "acceptedPct", s.invited_at as "invitedAt"
+    from track_splits s join tracks t on t.id = s.track_id join profiles p on p.user_id = s.owner_id
+    where s.collaborator_id = ${userId} and t.deleted_at is null and (s.status in ('pending', 'accepted') or s.accepted_pct is not null)
+    order by s.status = 'pending' desc, s.invited_at desc limit 200`);
+  return rows.map((r) => ({ ...r, invitedAt: r.invitedAt.toISOString() }));
+}
+
+const answerSchema = z.object({
+  accept: z.boolean(),
+  // Les conditions affichées au collaborateur : s'il y a eu un changement entre-temps, la réponse est refusée.
+  pct: z.number(), role: z.string(), invitedAt: z.string().datetime(),
+});
+
+/** Le collaborateur accepte ou refuse la proposition qu'il a vue (la base refuse toute autre modification). */
+export async function respondSplit(userId: string, trackId: string, raw: unknown) {
   uuid.parse(trackId);
-  const ok = z.boolean().parse(accept);
-  const r = await withUser(userId, (tx) => tx`update track_splits set status = ${ok ? 'accepted' : 'declined'}
-    where track_id = ${trackId} and collaborator_id = ${userId} and status = 'pending'`);
+  const a = answerSchema.parse(raw);
+  const r = await withUser(userId, (tx) => tx`update track_splits set status = ${a.accept ? 'accepted' : 'declined'}
+    where track_id = ${trackId} and collaborator_id = ${userId} and status = 'pending'
+      and pct = ${a.pct} and role = ${a.role} and date_trunc('milliseconds', invited_at) = ${a.invitedAt}::timestamptz`);
+  if (!r.count) throw new Invalid('La proposition a changé ou n’existe plus. Recharge la page.');
+}
+
+/** Le collaborateur se retire : sa part cesse de s'appliquer aux ventes suivantes. */
+export async function withdrawSplit(userId: string, trackId: string) {
+  uuid.parse(trackId);
+  const r = await withUser(userId, (tx) => tx`update track_splits set status = 'withdrawn'
+    where track_id = ${trackId} and collaborator_id = ${userId} and status <> 'withdrawn'`);
   if (!r.count) throw new NotFound();
 }
 
@@ -360,8 +398,8 @@ export async function confirmPayment(sessionId: string, now = new Date()) {
       country_conflict = ${conflict}, transfers_due_at = ${due}, refund_requested_at = ${refundReason ? now : null},
       refund_reason = ${refundReason} where id = ${o.id}`;
     const splits = o.trackId ? await tx<{ userId: string; role: string; pct: number }[]>`
-      select collaborator_id as "userId", role, pct::float as pct from track_splits where track_id = ${o.trackId} and status = 'accepted'
-      order by pct desc, collaborator_id` : [];
+      select collaborator_id as "userId", accepted_role as role, accepted_pct::float as pct from track_splits
+      where track_id = ${o.trackId} and accepted_pct is not null order by accepted_pct desc, collaborator_id` : [];
     const shares = computeShares({ netCents: o.netCents, commissionCents: o.commissionCents, feeCents: fee, ownerId: o.sellerId, splits });
     for (const s of shares) {
       await tx`insert into order_shares (order_id, user_id, is_owner, role, pct, amount_cents)
@@ -393,7 +431,8 @@ export async function refundBySeller(userId: string, orderId: string) {
   // Une fois une part virée, seul Sonikc peut rembourser : sinon le producteur reprendrait l'argent de ses collaborateurs.
   const requested = await asService(async (tx) => {
     await tx`select 1 from orders where id = ${orderId} for update`;
-    const [x] = await tx`select 1 from order_shares where order_id = ${orderId} and status = 'transferred'`;
+    // Virement parti, en cours, ou peut-être parti (réponse de Stripe perdue) : plus de remboursement par le producteur.
+    const [x] = await tx`select 1 from order_shares where order_id = ${orderId} and (status in ('transferring', 'transferred') or attempts > 0)`;
     if (x) return false;
     await tx`update orders set refund_requested_at = coalesce(refund_requested_at, now()),
       refund_reason = coalesce(refund_reason, 'Remboursé par le producteur') where id = ${orderId} and status = 'paid'`;
@@ -440,7 +479,8 @@ export async function afterRefund(orderId: string, reason: string, now = new Dat
     // Exclusive remboursée : le morceau peut de nouveau être vendu.
     if (o.trackId) await tx`update tracks set exclusive_sold_at = null, exclusive_sold_order = null where id = ${o.trackId} and exclusive_sold_order = ${orderId}`;
     // Avant le virement : la part prévue est annulée. Après : elle est reprise (ci-dessous, et par le balayage en cas d'échec).
-    await tx`update order_shares set status = 'canceled' where order_id = ${orderId} and status in ('scheduled', 'held', 'disputed')`;
+    // (retry_at remis à zéro : une part dont un essai a peut-être abouti est vérifiée chez Stripe tout de suite.)
+    await tx`update order_shares set status = 'canceled', retry_at = null where order_id = ${orderId} and status in ('scheduled', 'held', 'disputed')`;
     await enqueue(tx, 'order_credit_note', { orderId });
   });
   await reverseShares(orderId);
@@ -448,6 +488,21 @@ export async function afterRefund(orderId: string, reason: string, now = new Dat
 
 /** Reprend chaque part déjà virée d'une commande remboursée. Un échec reste « virée » et sera retenté. */
 export async function reverseShares(orderId: string) {
+  // Parts annulées après un essai dont la réponse s'est perdue : le virement est peut-être parti, on vérifie chez Stripe.
+  const doubtful = await asService((tx) => tx<{ userId: string }[]>`select s.user_id as "userId" from order_shares s join orders o on o.id = s.order_id
+    where s.order_id = ${orderId} and o.status = 'refunded' and s.status = 'canceled' and s.attempts > 0 and s.transfer_id is null
+      and (s.retry_at is null or s.retry_at <= now())`);
+  for (const d of doubtful) {
+    try {
+      const tr = await findTransfer(orderId, d.userId);
+      await asService((tx) => tr
+        ? tx`update order_shares set status = 'transferred', transfer_id = ${tr.id} where order_id = ${orderId} and user_id = ${d.userId} and status = 'canceled'`
+        : tx`update order_shares set retry_at = 'infinity', last_error = 'vérifié : aucun virement parti' where order_id = ${orderId} and user_id = ${d.userId}`);
+    } catch (e) {
+      await asService((tx) => tx`update order_shares set retry_at = now() + interval '1 hour', last_error = ${(e as Error).message.slice(0, 500)}
+        where order_id = ${orderId} and user_id = ${d.userId}`);
+    }
+  }
   const rows = await asService((tx) => tx<{ userId: string; transferId: string; attempts: number }[]>`
     select s.user_id as "userId", s.transfer_id as "transferId", s.attempts from order_shares s join orders o on o.id = s.order_id
     where s.order_id = ${orderId} and o.status = 'refunded' and s.status = 'transferred'`);
@@ -471,10 +526,17 @@ export async function reverseShares(orderId: string) {
 
 // ───────── Virements (14 jours après le paiement) ─────────
 
+/** Cherche chez Stripe un virement déjà fait pour cette part (réponse perdue lors d'un essai précédent). */
+async function findTransfer(orderId: string, userId: string) {
+  const list = await stripe().transfers.list({ transfer_group: orderId, limit: 100 });
+  return list.data.find((t) => t.metadata?.user_id === userId);
+}
+
 /**
  * Vire chaque part due. Sans compte de reversement actif, la part reste « en attente » (rien n'est perdu) et
- * repasse le lendemain ; une erreur de Stripe la fait repasser une heure plus tard. Le balayage horaire
- * (`sweepPayments`) reprend tout ce qui est dû : aucune part n'est abandonnée.
+ * repasse le lendemain ; une erreur de Stripe la fait repasser une heure plus tard. Avant l'appel à Stripe, la part
+ * est réservée (« en cours ») sous verrou de la commande : un remboursement ne peut pas s'intercaler.
+ * Le balayage (`sweepPayments`) reprend tout ce qui est dû ou resté « en cours » : aucune part n'est abandonnée.
  */
 export async function runTransfers(orderId: string, now = new Date()) {
   const [o] = await asService((tx) => tx<{ status: string; chargeId: string | null; due: Date | null; disputed: Date | null; refunding: Date | null }[]>`
@@ -486,49 +548,70 @@ export async function runTransfers(orderId: string, now = new Date()) {
     where s.order_id = ${orderId} and s.status in ('scheduled', 'held') and (s.retry_at is null or s.retry_at <= ${now})`);
   let transferred = 0, held = 0, failed = 0;
   for (const s of shares) {
-    if (s.amountCents === 0) { await asService((tx) => tx`update order_shares set status = 'canceled' where order_id = ${orderId} and user_id = ${s.userId}`); continue; }
+    if (s.amountCents === 0) { await asService((tx) => tx`update order_shares set status = 'canceled' where order_id = ${orderId} and user_id = ${s.userId} and status in ('scheduled', 'held')`); continue; }
+    let active = Boolean(s.active);
     try {
-      let active = Boolean(s.active);
       if (s.accountId && !active) active = (await refreshAccountById(s.userId, s.accountId)).transfersActive;
-      if (!s.accountId || !active) {
-        held++;
-        await asService((tx) => tx`update order_shares set status = 'held', retry_at = ${now}::timestamptz + interval '1 day'
-          where order_id = ${orderId} and user_id = ${s.userId} and status in ('scheduled', 'held')`);
-        continue;
-      }
-      // Après un échec, la réponse a pu se perdre alors que le virement est parti : on cherche avant de recommencer.
-      let tr: Stripe.Transfer | undefined;
-      if (s.attempts > 0) {
-        const list = await stripe().transfers.list({ transfer_group: orderId, limit: 100 });
-        tr = list.data.find((t) => t.metadata?.user_id === s.userId);
-      }
+    } catch { active = false; }
+    if (!s.accountId || !active) {
+      held++;
+      await asService((tx) => tx`update order_shares set status = 'held', retry_at = ${now}::timestamptz + interval '1 day'
+        where order_id = ${orderId} and user_id = ${s.userId} and status in ('scheduled', 'held')`);
+      continue;
+    }
+    // Réservation sous verrou : commande toujours payée, aucun remboursement demandé, pas de litige.
+    const claimed = await asService(async (tx) => {
+      const [x] = await tx<{ ok: boolean }[]>`select (status = 'paid' and refund_requested_at is null and disputed_at is null) as ok
+        from orders where id = ${orderId} for update`;
+      if (!x?.ok) return false;
+      return (await tx`update order_shares set status = 'transferring' where order_id = ${orderId} and user_id = ${s.userId}
+        and status in ('scheduled', 'held') returning 1`).length > 0;
+    });
+    if (!claimed) continue;
+    try {
+      let tr: Stripe.Transfer | undefined = s.attempts > 0 ? await findTransfer(orderId, s.userId) : undefined;
       tr ??= await stripe().transfers.create({
         amount: s.amountCents, currency: 'eur', destination: s.accountId!, transfer_group: orderId,
         ...(o.chargeId ? { source_transaction: o.chargeId } : {}), metadata: { order_id: orderId, user_id: s.userId },
       }, { idempotencyKey: `transfer-${orderId}-${s.userId}-${s.attempts}` });
-      // Une commande remboursée entre-temps : la part qui vient d'être virée est aussitôt reprise.
-      const stillPaid = await asService(async (tx) => {
-        const [x] = await tx<{ status: string }[]>`select status from orders where id = ${orderId} for update`;
+      const refunded = await asService(async (tx) => {
         await tx`update order_shares set status = 'transferred', transfer_id = ${tr!.id}, retry_at = null, last_error = null
-          where order_id = ${orderId} and user_id = ${s.userId}`;
-        return x.status === 'paid';
+          where order_id = ${orderId} and user_id = ${s.userId} and status = 'transferring'`;
+        const [x] = await tx<{ status: string }[]>`select status from orders where id = ${orderId}`;
+        return x.status === 'refunded';
       });
-      if (!stillPaid) await reverseShares(orderId);
+      // Remboursé par Sonikc pendant l'envoi : la part qui vient de partir est aussitôt reprise.
+      if (refunded) await reverseShares(orderId);
       else transferred++;
     } catch (e) {
       failed++;
-      await asService((tx) => tx`update order_shares set attempts = attempts + 1, retry_at = ${now}::timestamptz + interval '1 hour',
-        last_error = ${(e as Error).message.slice(0, 500)} where order_id = ${orderId} and user_id = ${s.userId}`);
+      await asService((tx) => tx`update order_shares set status = 'scheduled', attempts = attempts + 1, retry_at = ${now}::timestamptz + interval '1 hour',
+        last_error = ${(e as Error).message.slice(0, 500)} where order_id = ${orderId} and user_id = ${s.userId} and status = 'transferring'`);
     }
   }
   return { transferred, held, failed };
 }
 
+/** Parts restées « en cours » (arrêt pendant l'appel à Stripe) : on regarde chez Stripe si le virement est parti. */
+async function recoverTransferring(now: Date) {
+  const rows = await asService((tx) => tx<{ orderId: string; userId: string }[]>`select order_id as "orderId", user_id as "userId" from order_shares
+    where status = 'transferring' and updated_at < ${now}::timestamptz - interval '15 minutes' limit 100`);
+  for (const r of rows) {
+    try {
+      const tr = await findTransfer(r.orderId, r.userId);
+      await asService((tx) => tr
+        ? tx`update order_shares set status = 'transferred', transfer_id = ${tr.id}, retry_at = null where order_id = ${r.orderId} and user_id = ${r.userId} and status = 'transferring'`
+        : tx`update order_shares set status = 'scheduled', attempts = attempts + 1, retry_at = null where order_id = ${r.orderId} and user_id = ${r.userId} and status = 'transferring'`);
+    } catch (e) { console.error('part en cours', r.orderId, (e as Error).message); }
+  }
+}
+
 /**
- * Balayage horaire (worker) : remboursements demandés non confirmés, parts dues non virées, reprises non faites,
- * emails de livraison non partis. Ce qui a échoué une fois finit toujours par être repris.
+ * Balayage (worker, toutes les 10 min) : parts restées « en cours », remboursements demandés non confirmés,
+ * parts dues non virées, reprises non faites, emails de livraison non partis.
  */
 export async function sweepPayments(now = new Date()) {
+  await recoverTransferring(now);
   const refunds = await asService((tx) => tx<{ id: string }[]>`select id from orders
     where status = 'paid' and refund_requested_at is not null and refund_requested_at < ${now}::timestamptz - interval '5 minutes' limit 100`);
   for (const o of refunds) await refundOrder(o.id, now).catch((e) => console.error('remboursement', o.id, (e as Error).message));
@@ -537,7 +620,9 @@ export async function sweepPayments(now = new Date()) {
       and s.status in ('scheduled', 'held') and (s.retry_at is null or s.retry_at <= ${now}) limit 200`);
   for (const o of transfers) await runTransfers(o.id, now).catch((e) => console.error('virement', o.id, (e as Error).message));
   const reversals = await asService((tx) => tx<{ id: string }[]>`select distinct o.id from orders o join order_shares s on s.order_id = o.id
-    where o.status = 'refunded' and s.status = 'transferred' and (s.retry_at is null or s.retry_at <= ${now}) limit 200`);
+    where o.status = 'refunded' and (s.status = 'transferred' or (s.status = 'canceled' and s.attempts > 0 and s.transfer_id is null))
+      and (s.retry_at is null or s.retry_at <= ${now}) limit 200`);
+  // (Une part annulée dont on a vérifié qu'aucun virement n'est parti a retry_at = infinity : elle n'est plus reprise.)
   for (const o of reversals) await reverseShares(o.id).catch((e) => console.error('reprise', o.id, (e as Error).message));
   const undelivered = await asService((tx) => tx<{ id: string }[]>`select id from orders where status = 'paid' and refund_requested_at is null
     and buyer_notified_at is null and paid_at < ${now}::timestamptz - interval '15 minutes'
@@ -618,7 +703,8 @@ export async function listSales(userId: string): Promise<SaleRow[]> {
              case when o.seller_id = ${userId} then o.buyer_email else null end as "buyerEmail", o.country, o.gross_cents as "grossCents", o.net_cents as "netCents", o.vat_cents as "vatCents",
              o.commission_cents as "commissionCents", coalesce(o.stripe_fee_cents, 0) as "feeCents", o.status, o.invoice_no as "invoiceNo",
              s.amount_cents as "myShareCents", s.status as "myShareStatus", o.seller_id = ${userId} as "isSeller", o.transfers_due_at as "transfersDueAt",
-             (o.seller_id = ${userId} and o.status = 'paid' and not exists (select 1 from order_shares x where x.order_id = o.id and x.status = 'transferred')) as refundable
+             (o.seller_id = ${userId} and o.status = 'paid' and o.refund_requested_at is null and not exists (select 1 from order_shares x
+               where x.order_id = o.id and (x.status in ('transferring', 'transferred') or x.attempts > 0))) as refundable
       from orders o join order_shares s on s.order_id = o.id and s.user_id = ${userId}
       order by o.paid_at desc limit 500`;
     const ids = rows.map((r) => r.id);
