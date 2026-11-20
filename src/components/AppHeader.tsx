@@ -13,7 +13,10 @@ const LINKS = [
   { href: '/app', label: 'Bibliothèque' },
   { href: '/app/contacts', label: 'Contacts' },
   { href: '/app/campaigns', label: 'Envois' },
+  { href: '/app/boutique', label: 'Ma page' },
+  { href: '/app/ventes', label: 'Ventes' },
   { href: '/recus', label: 'Reçus' },
+  { href: '/achats', label: 'Achats' },
   { href: '/app/trash', label: 'Corbeille' },
 ];
 
@@ -26,11 +29,11 @@ export function AppHeader({ handle, notation }: { handle: string; notation: 'aut
     <header className="sticky top-0 z-30 border-b border-line bg-ink/90 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center gap-2 px-3 py-3 sm:gap-4 sm:px-6">
         <Link href="/app" className="text-sm font-black uppercase tracking-[0.15em] text-accent sm:tracking-[0.25em]">Sonikc</Link>
-        <nav className="hidden min-w-0 flex-1 gap-4 text-sm text-mute sm:flex">
+        <nav className="hidden min-w-0 flex-1 gap-4 text-sm text-mute lg:flex">
           {LINKS.map((l) => <Link key={l.href} href={l.href} className={`hover:text-text ${current.href === l.href ? 'text-text' : ''}`}>{l.label}</Link>)}
         </nav>
         {/* Sur mobile : un menu déroulant plutôt qu'une barre qui déborde. */}
-        <div className="relative min-w-0 flex-1 sm:hidden">
+        <div className="relative min-w-0 flex-1 lg:hidden">
           <button className="flex max-w-full items-center gap-1 truncate text-sm text-text" aria-expanded={menu} aria-haspopup="true" data-testid="menu" onClick={() => setMenu((m) => !m)}>
             {current.label} <span aria-hidden="true" className="text-mute">▾</span>
           </button>

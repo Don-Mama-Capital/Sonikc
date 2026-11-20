@@ -1,0 +1,34 @@
+name: Stripe (mode test)
+# Test réel contre l'API Stripe en mode test : mêmes fonctions que l'app, aucun argent réel.
+# Exige le secret STRIPE_TEST_SECRET_KEY (clé secrète de test, sk_test_…) ; sans lui, le test est sauté avec un avertissement.
+on:
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: stripe-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  stripe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+    steps:
+      - name: Secret présent ?
+        id: check
+        run: |
+          if [ -z "$STRIPE_SECRET_KEY" ]; then
+            echo "::warning::Secret STRIPE_TEST_SECRET_KEY absent : test Stripe réel sauté."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.skip != '1'
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.skip != '1'
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        if: steps.check.outputs.skip != '1'
+      - run: npm run test:stripe
+        if: steps.check.outputs.skip != '1'

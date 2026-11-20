@@ -190,6 +190,10 @@ export async function runJob(job: Job) {
   if (job.kind === 'unzip_import') return processImport(job.payload.importId);
   if (job.kind === 'campaign_send') return runCampaignSend(job.payload.campaignId, Number(job.payload.step) === 1 ? 1 : 0);
   if (job.kind === 'campaign_followup') return runFollowup(job.payload.campaignId);
+  if (job.kind === 'order_deliver') return (await import('./order-delivery')).deliverOrder(job.payload.orderId);
+  if (job.kind === 'order_credit_note') return (await import('./order-delivery')).creditNote(job.payload.orderId);
+  if (job.kind === 'order_transfers') { await (await import('./commerce')).runTransfers(job.payload.orderId); return; }
+  if (job.kind === 'order_refund') return (await import('./commerce')).refundOrder(job.payload.orderId);
   throw new PermanentError(`type de tâche inconnu : ${job.kind}`);
 }
 

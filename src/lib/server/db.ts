@@ -50,6 +50,15 @@ export async function asApp<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   }) as Promise<T>;
 }
 
+/** Lecture du catalogue public (pages /identifiant) : rôle de l'app, sans utilisateur, contexte « catalogue ». */
+export async function withPublic<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  return sql().begin(async (tx) => {
+    await tx`select set_config('app.user_id', '', true), set_config('app.public_catalog', '1', true)`;
+    await tx`set local role sonikc_app`;
+    return fn(tx);
+  }) as Promise<T>;
+}
+
 export type ViewerCtx = { userId: string | null; linkId: string; unlocked: boolean };
 
 /**

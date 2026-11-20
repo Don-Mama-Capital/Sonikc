@@ -4,6 +4,7 @@ import path from 'node:path';
 import { startPostgres } from './pg';
 import { migrate } from './migrate';
 import { startFakeGoogle } from './fake-google';
+import { startFakeStripe } from './fake-stripe';
 
 /**
  * Environnement de recette : Postgres jetable, worker, et l'app compilée (`next start`).
@@ -16,6 +17,12 @@ const pg = await startPostgres({ dir: path.join(root, 'pg'), port: 54410, persis
 await migrate(pg.url, () => {});
 
 const google = await startFakeGoogle({ port: 54420 });
+// Faux Stripe : ses webhooks signés arrivent sur l'app comme ceux de Stripe.
+const stripe = await startFakeStripe({
+  port: 54430, webhookSecret: 'whsec_e2e_fake',
+  webhook: async (payload, signature) => (await fetch('http://localhost:3100/api/stripe/webhook', {
+    method: 'POST', body: payload, headers: { 'content-type': 'application/json', 'stripe-signature': signature } })).status,
+});
 Object.assign(process.env, google.env, {
   DATABASE_URL: pg.url,
   APP_SECRET: 'e2e-secret-e2e-secret-e2e-secret-e2e-secret',
@@ -23,6 +30,9 @@ Object.assign(process.env, google.env, {
   STORAGE_DIR: path.join(root, 'storage'),
   MAIL_DIR: path.join(root, 'mail'),
   ALLOW_LOCAL_DRIVERS: '1',
+  STRIPE_SECRET_KEY: 'sk_test_e2e_fake',
+  STRIPE_WEBHOOK_SECRET: 'whsec_e2e_fake',
+  STRIPE_API_BASE: stripe.url,
 });
 
 const next = spawn('npx', ['next', 'start', '-p', '3100'], { stdio: 'inherit', env: { ...process.env, NODE_ENV: 'production' } });

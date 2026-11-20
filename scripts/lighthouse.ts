@@ -26,7 +26,8 @@ for (const f of (await readdir(MAIL_DIR)).sort().reverse()) {
   if (m.to === email) { code = /(\d{6})/.exec(m.subject)![1]; break; }
 }
 await call('/api/auth/verify', { method: 'POST', body: JSON.stringify({ email, code }) });
-await call('/api/profile', { method: 'POST', body: JSON.stringify({ handle: `lh_${Date.now() % 1e6}`, displayName: 'Audit' }) });
+const handle = `lh_${Date.now() % 1e6}`;
+await call('/api/profile', { method: 'POST', body: JSON.stringify({ handle, displayName: 'Audit' }) });
 const file = await readFile('tests/fixtures/generated/ref01_140_Amin.wav');
 const t = await (await call('/api/uploads', { method: 'POST', body: JSON.stringify({ filename: 'Lueur froide.wav', size: file.length }) })).json();
 await fetch(BASE + t.uploadUrl, { method: 'PUT', body: file });
@@ -40,12 +41,15 @@ for (let i = 0; i < 60; i++) {
 await call(`/api/share/track/${t.trackId}`, { method: 'PATCH', body: JSON.stringify({ visibility: 'public' }) });
 const link = await (await call(`/api/share/track/${t.trackId}/links`, { method: 'POST', body: JSON.stringify({ label: 'Audit' }) })).json();
 const sharedPath = new URL(link.url).pathname;
+await call(`/api/share/track/${t.trackId}`, { method: 'PATCH', body: JSON.stringify({ visibility: 'for_sale' }) });
+await call('/api/profile/public', { method: 'PUT', body: JSON.stringify({ bio: 'Beats trap et drill.', links: { instagram: 'instagram.com/audit' } }) });
 
 const pages = [
   { name: 'connexion', url: '/login', auth: false },
   { name: 'bibliotheque', url: '/app', auth: true },
   { name: 'morceau', url: `/app/tracks/${t.trackId}`, auth: true },
   { name: 'partage', url: sharedPath, auth: false },
+  { name: 'page-publique', url: `/${handle}`, auth: false },
 ];
 const chrome = await chromeLauncher.launch({ chromePath: process.env.CHROME_PATH ?? '/usr/bin/google-chrome', chromeFlags: ['--headless=new', '--no-sandbox'] });
 const out: Record<string, Record<string, number>> = {};

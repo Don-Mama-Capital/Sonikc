@@ -15,6 +15,11 @@ const schema = z
     RESEND_API_KEY: z.string().optional(),
     MAIL_FROM: z.string().default('Sonikc <onboarding@resend.dev>'),
     ALLOW_LOCAL_DRIVERS: z.string().optional(),
+    // Paiement : clé de test uniquement (sk_test_…) tant que la vente réelle n'est pas validée.
+    STRIPE_SECRET_KEY: z.string().regex(/^(sk|rk)_test_/, 'STRIPE_SECRET_KEY doit être une clé de test (sk_test_…)').optional(),
+    STRIPE_WEBHOOK_SECRET: z.string().startsWith('whsec_').optional(),
+    STRIPE_API_BASE: z.string().url().optional(), // faux Stripe des tests
+    STRIPE_CONNECT_COUNTRY: z.string().regex(/^[A-Z]{2}$/).default('FR'),
     NODE_ENV: z.string().default('development'),
   })
   .superRefine((e, ctx) => {
@@ -40,6 +45,7 @@ export function env(): Env {
   const raw = JSON.stringify([
     process.env.DATABASE_URL, process.env.STORAGE_DRIVER, process.env.STORAGE_DIR, process.env.MAIL_DRIVER, process.env.MAIL_DIR,
     process.env.SUPABASE_URL, process.env.RESEND_API_KEY, process.env.NODE_ENV, process.env.ALLOW_LOCAL_DRIVERS,
+    process.env.STRIPE_SECRET_KEY, process.env.STRIPE_WEBHOOK_SECRET, process.env.STRIPE_API_BASE,
   ]);
   if (!cached || cached.raw !== raw) cached = { raw, env: schema.parse(process.env) };
   return cached.env;

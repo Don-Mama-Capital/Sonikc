@@ -18,14 +18,17 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "lighthouse": "tsx scripts/lighthouse.ts",
-    "supabase:setup": "tsx scripts/supabase-setup.ts"
+    "supabase:setup": "tsx scripts/supabase-setup.ts",
+    "test:stripe": "vitest run -c vitest.live.config.ts"
   },
   "dependencies": {
     "fflate": "0.8.3",
     "next": "16.4.6",
+    "pdf-lib": "1.17.1",
     "postgres": "3.4.9",
     "react": "19.3.1",
     "react-dom": "19.3.1",
+    "stripe": "23.1.0",
     "zod": "4.6.7"
   },
   "devDependencies": {

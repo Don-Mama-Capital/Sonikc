@@ -16,7 +16,7 @@ Chaque lot : cadrer (critères écrits avant le code) → réfléchir → produi
 ## Conventions
 
 - Textes de l'interface en français, tutoiement, phrases courtes. Aucun texte, nom ou visuel repris de vvault.
-- Toute donnée utilisateur passe par `withUser()` (rôle `sonikc_app` + RLS). `asService()` est réservé à l'auth et au worker.
+- Toute donnée utilisateur passe par `withUser()` (rôle `sonikc_app` + RLS). `asService()` est réservé à l'auth, au worker et aux flux de paiement (achat, webhook Stripe, livraison, virements, remboursements) ; l'app ne fait que lire les ventes. (Règle modifiée le 20/11/2026 avec l'accord du propriétaire ; avant : « `asService()` est réservé à l'auth et au worker. »)
 - Les offres et leurs limites viendront d'un seul fichier de configuration (phase 5) : aucun texte d'offre écrit en dur.
 - Pas de fichier audio servi sans URL signée qui expire.
 
