@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type Stripe from 'stripe';
-import { asService, withPublic, withUser, type Tx } from './db';
+import { asPayments, withPublic, withUser, type Tx } from './db';
 import { Invalid, NotFound } from './library';
 import { env } from './env';
 import { hmac, safeEqualStr, sha256 } from './crypto';
@@ -148,7 +148,7 @@ export async function setSplits(userId: string, trackId: string, raw: unknown) {
 }
 
 async function sendSplitInvites(ownerId: string, trackId: string, title: string, collaboratorIds: string[]) {
-  const toSend = await asService(async (tx) => {
+  const toSend = await asPayments(async (tx) => {
     await tx`select pg_advisory_xact_lock(hashtext(${`split-invites:${ownerId}`}))`;
     const [{ today }] = await tx<{ today: number }[]>`select count(*)::int as today from split_invite_log
       where owner_id = ${ownerId} and sent_at > now() - interval '1 day'`;
@@ -177,7 +177,7 @@ export type SplitInvite = { trackId: string; trackTitle: string; ownerName: stri
 
 /** Les collaborations proposées à cet utilisateur ou en vigueur (lues côté serveur, limitées à ses propres lignes). */
 export async function listSplitInvites(userId: string): Promise<SplitInvite[]> {
-  const rows = await asService((tx) => tx<(Omit<SplitInvite, 'invitedAt'> & { invitedAt: Date })[]>`
+  const rows = await asPayments((tx) => tx<(Omit<SplitInvite, 'invitedAt'> & { invitedAt: Date })[]>`
     select s.track_id as "trackId", t.title as "trackTitle", p.display_name as "ownerName", p.handle as "ownerHandle", s.role,
            s.pct::float as pct, s.status, s.accepted_pct::float as "acceptedPct", s.invited_at as "invitedAt"
     from track_splits s join tracks t on t.id = s.track_id join profiles p on p.user_id = s.owner_id
@@ -240,7 +240,7 @@ export async function startCheckout(raw: unknown, ctx: { buyerUserId: string | n
   const { offer } = found;
 
   const price = withVat(offer.finalPriceCents, input.country);
-  const plan = await asService(async (tx) => (await tx<{ plan: string }[]>`select plan from profiles where user_id = ${found.ownerId}`)[0]?.plan ?? 'free');
+  const plan = await asPayments(async (tx) => (await tx<{ plan: string }[]>`select plan from profiles where user_id = ${found.ownerId}`)[0]?.plan ?? 'free');
   const pct = commissionPct(plan);
   const licence = {
     name: offer.name, description: offer.description, formats: offer.formats, maxStreams: offer.maxStreams, maxCopies: offer.maxCopies,
@@ -248,7 +248,7 @@ export async function startCheckout(raw: unknown, ctx: { buyerUserId: string | n
   };
 
   // 2. Commande en attente (et réservation de l'exclusive), dans une transaction.
-  const orderId = await asService(async (tx) => {
+  const orderId = await asPayments(async (tx) => {
     const [{ n }] = await tx<{ n: number }[]>`select count(*)::int as n from orders
       where status = 'pending' and ip_hash = ${ipHash} and created_at > ${now} - interval '1 hour'`;
     if (n >= MAX_PENDING_PER_IP_HOUR) throw new Invalid('Trop de paiements commencés. Réessaie dans une heure.');
@@ -289,7 +289,7 @@ export async function startCheckout(raw: unknown, ctx: { buyerUserId: string | n
       success_url: `${orderUrl(orderId)}?paye=1`,
       cancel_url: `${env().APP_URL}/${found.handle}`,
     }, { idempotencyKey: `checkout-${orderId}` });
-    await asService((tx) => tx`update orders set checkout_session_id = ${session.id} where id = ${orderId}`);
+    await asPayments((tx) => tx`update orders set checkout_session_id = ${session.id} where id = ${orderId}`);
     return { orderId, url: session.url! };
   } catch (e) {
     await expireOrder(orderId);
@@ -298,7 +298,7 @@ export async function startCheckout(raw: unknown, ctx: { buyerUserId: string | n
 }
 
 async function expireOrder(orderId: string) {
-  await asService(async (tx) => {
+  await asPayments(async (tx) => {
     await tx`update orders set status = 'expired' where id = ${orderId} and status = 'pending'`;
     await tx`update tracks set exclusive_reserved_until = null, exclusive_reserved_order = null where exclusive_reserved_order = ${orderId}`;
   });
@@ -315,13 +315,13 @@ export class SignatureError extends Error {}
 export async function handleWebhook(payload: string, signature: string | null) {
   let event: Stripe.Event;
   try { event = verifyWebhook(payload, signature); } catch (e) { throw new SignatureError((e as Error).message); }
-  await asService((tx) => tx`insert into stripe_events (id, type) values (${event.id}, ${event.type}) on conflict (id) do nothing`);
-  const [done] = await asService((tx) => tx<{ done: boolean }[]>`select processed_at is not null as done from stripe_events where id = ${event.id}`);
+  await asPayments((tx) => tx`insert into stripe_events (id, type) values (${event.id}, ${event.type}) on conflict (id) do nothing`);
+  const [done] = await asPayments((tx) => tx<{ done: boolean }[]>`select processed_at is not null as done from stripe_events where id = ${event.id}`);
   if (done?.done) return null; // déjà traité
   const orderOfCharge = async (c: Stripe.Charge | Stripe.Dispute) => {
     const pi = typeof c.payment_intent === 'string' ? c.payment_intent : c.payment_intent?.id;
     if (!pi) return null;
-    const [o] = await asService((tx) => tx<{ id: string }[]>`select id from orders where payment_intent_id = ${pi}`);
+    const [o] = await asPayments((tx) => tx<{ id: string }[]>`select id from orders where payment_intent_id = ${pi}`);
     return o?.id ?? null;
   };
   if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
@@ -329,7 +329,7 @@ export async function handleWebhook(payload: string, signature: string | null) {
     if (s.payment_status === 'paid') await confirmPayment(s.id);
   } else if (event.type === 'checkout.session.expired' || event.type === 'checkout.session.async_payment_failed') {
     const s = event.data.object as Stripe.Checkout.Session;
-    const [o] = await asService((tx) => tx<{ id: string }[]>`select id from orders where checkout_session_id = ${s.id}`);
+    const [o] = await asPayments((tx) => tx<{ id: string }[]>`select id from orders where checkout_session_id = ${s.id}`);
     if (o) await expireOrder(o.id);
   } else if (event.type === 'charge.refunded') {
     const c = event.data.object as Stripe.Charge;
@@ -338,20 +338,20 @@ export async function handleWebhook(payload: string, signature: string | null) {
     if (id) await afterRefund(id, 'Remboursé depuis Stripe');
   } else if (event.type === 'charge.dispute.created') {
     const id = await orderOfCharge(event.data.object as Stripe.Dispute);
-    if (id) await asService(async (tx) => {
+    if (id) await asPayments(async (tx) => {
       await tx`update orders set disputed_at = now() where id = ${id}`;
       await tx`update order_shares set status = 'disputed' where order_id = ${id} and status in ('scheduled', 'held')`;
     });
   } else if (event.type === 'charge.dispute.closed') {
     const d = event.data.object as Stripe.Dispute;
     const id = await orderOfCharge(d);
-    if (id && d.status === 'won') await asService(async (tx) => {
+    if (id && d.status === 'won') await asPayments(async (tx) => {
       await tx`update orders set disputed_at = null where id = ${id}`;
       await tx`update order_shares set status = 'scheduled', retry_at = null where order_id = ${id} and status = 'disputed'`;
     });
     else if (id && d.status === 'lost') await afterRefund(id, 'Litige perdu : paiement repris par la banque');
   }
-  await asService((tx) => tx`update stripe_events set processed_at = now() where id = ${event.id}`);
+  await asPayments((tx) => tx`update stripe_events set processed_at = now() where id = ${event.id}`);
   return event.type;
 }
 
@@ -375,7 +375,7 @@ export async function confirmPayment(sessionId: string, now = new Date()) {
   const cardCountry = charge?.payment_method_details?.card?.country ?? null;
   const alreadyRefunded = Boolean(charge && charge.amount_refunded >= charge.amount);
 
-  const result = await asService(async (tx) => {
+  const result = await asPayments(async (tx) => {
     const [o] = await tx<{ id: string; status: string; sellerId: string; trackId: string | null; exclusive: boolean; netCents: number;
       grossCents: number; commissionCents: number; country: string }[]>`
       select id, status, seller_id as "sellerId", track_id as "trackId", exclusive, net_cents as "netCents", gross_cents as "grossCents",
@@ -437,7 +437,7 @@ export async function refundBySeller(userId: string, orderId: string) {
   if (!o) throw new NotFound();
   if (o.status !== 'paid') throw new Invalid('Cette vente est déjà remboursée.');
   // Une fois une part virée, seul Sonikc peut rembourser : sinon le producteur reprendrait l'argent de ses collaborateurs.
-  const requested = await asService(async (tx) => {
+  const requested = await asPayments(async (tx) => {
     await tx`select 1 from orders where id = ${orderId} for update`;
     // Virement parti, en cours, ou peut-être parti (réponse de Stripe perdue) : plus de remboursement par le producteur.
     const [x] = await tx`select 1 from order_shares where order_id = ${orderId} and (status in ('transferring', 'transferred') or attempts > 0)`;
@@ -453,7 +453,7 @@ export async function refundBySeller(userId: string, orderId: string) {
 /** Remboursement décidé par Sonikc (support, litige) : possible à tout moment, les parts virées sont reprises. */
 export async function refundByPlatform(orderId: string, reason: string) {
   uuid.parse(orderId);
-  await asService((tx) => tx`update orders set refund_requested_at = coalesce(refund_requested_at, now()),
+  await asPayments((tx) => tx`update orders set refund_requested_at = coalesce(refund_requested_at, now()),
     refund_reason = coalesce(refund_reason, ${reason}) where id = ${orderId} and status = 'paid'`);
   await refundOrder(orderId);
 }
@@ -463,7 +463,7 @@ export async function refundByPlatform(orderId: string, reason: string) {
  * un remboursement déjà fait depuis le tableau de bord Stripe est accepté), puis en applique les effets.
  */
 export async function refundOrder(orderId: string, now = new Date()) {
-  const [o] = await asService((tx) => tx<{ pi: string | null; status: string; reason: string | null; requested: Date | null }[]>`
+  const [o] = await asPayments((tx) => tx<{ pi: string | null; status: string; reason: string | null; requested: Date | null }[]>`
     select payment_intent_id as pi, status, refund_reason as reason, refund_requested_at as requested from orders where id = ${orderId}`);
   if (!o || o.status !== 'paid' || !o.pi || !o.requested) return;
   try {
@@ -476,7 +476,7 @@ export async function refundOrder(orderId: string, now = new Date()) {
 
 /** Effets d'un remboursement (qu'il vienne de Sonikc ou du tableau de bord Stripe). Idempotent. */
 export async function afterRefund(orderId: string, reason: string, now = new Date()) {
-  await asService(async (tx) => {
+  await asPayments(async (tx) => {
     const [o] = await tx<{ status: string; trackId: string | null }[]>`select status, track_id as "trackId" from orders where id = ${orderId} for update`;
     if (!o || o.status !== 'paid') return;
     const year = now.getUTCFullYear();
@@ -497,21 +497,21 @@ export async function afterRefund(orderId: string, reason: string, now = new Dat
 /** Reprend chaque part déjà virée d'une commande remboursée. Un échec reste « virée » et sera retenté. */
 export async function reverseShares(orderId: string) {
   // Parts annulées après un essai dont la réponse s'est perdue : le virement est peut-être parti, on vérifie chez Stripe.
-  const doubtful = await asService((tx) => tx<{ userId: string }[]>`select s.user_id as "userId" from order_shares s join orders o on o.id = s.order_id
+  const doubtful = await asPayments((tx) => tx<{ userId: string }[]>`select s.user_id as "userId" from order_shares s join orders o on o.id = s.order_id
     where s.order_id = ${orderId} and o.status = 'refunded' and s.status = 'canceled' and s.attempts > 0 and s.transfer_id is null
       and (s.retry_at is null or s.retry_at <= now())`);
   for (const d of doubtful) {
     try {
       const tr = await findTransfer(orderId, d.userId);
-      await asService((tx) => tr
+      await asPayments((tx) => tr
         ? tx`update order_shares set status = 'transferred', transfer_id = ${tr.id} where order_id = ${orderId} and user_id = ${d.userId} and status = 'canceled'`
         : tx`update order_shares set retry_at = 'infinity', last_error = 'vérifié : aucun virement parti' where order_id = ${orderId} and user_id = ${d.userId}`);
     } catch (e) {
-      await asService((tx) => tx`update order_shares set retry_at = now() + interval '1 hour', last_error = ${(e as Error).message.slice(0, 500)}
+      await asPayments((tx) => tx`update order_shares set retry_at = now() + interval '1 hour', last_error = ${(e as Error).message.slice(0, 500)}
         where order_id = ${orderId} and user_id = ${d.userId}`);
     }
   }
-  const rows = await asService((tx) => tx<{ userId: string; transferId: string; attempts: number }[]>`
+  const rows = await asPayments((tx) => tx<{ userId: string; transferId: string; attempts: number }[]>`
     select s.user_id as "userId", s.transfer_id as "transferId", s.attempts from order_shares s join orders o on o.id = s.order_id
     where s.order_id = ${orderId} and o.status = 'refunded' and s.status = 'transferred'`);
   let failed = 0;
@@ -522,10 +522,10 @@ export async function reverseShares(orderId: string) {
       if (!tr.reversed && (tr.amount_reversed ?? 0) < tr.amount) {
         await stripe().transfers.createReversal(s.transferId, { metadata: { order_id: orderId } }, { idempotencyKey: `reversal-${orderId}-${s.userId}-${s.attempts}` });
       }
-      await asService((tx) => tx`update order_shares set status = 'reversed', last_error = null where order_id = ${orderId} and user_id = ${s.userId}`);
+      await asPayments((tx) => tx`update order_shares set status = 'reversed', last_error = null where order_id = ${orderId} and user_id = ${s.userId}`);
     } catch (e) {
       failed++;
-      await asService((tx) => tx`update order_shares set attempts = attempts + 1, retry_at = now() + interval '1 hour',
+      await asPayments((tx) => tx`update order_shares set attempts = attempts + 1, retry_at = now() + interval '1 hour',
         last_error = ${(e as Error).message.slice(0, 500)} where order_id = ${orderId} and user_id = ${s.userId}`);
     }
   }
@@ -547,28 +547,28 @@ async function findTransfer(orderId: string, userId: string) {
  * Le balayage (`sweepPayments`) reprend tout ce qui est dû ou resté « en cours » : aucune part n'est abandonnée.
  */
 export async function runTransfers(orderId: string, now = new Date()) {
-  const [o] = await asService((tx) => tx<{ status: string; chargeId: string | null; due: Date | null; disputed: Date | null; refunding: Date | null }[]>`
+  const [o] = await asPayments((tx) => tx<{ status: string; chargeId: string | null; due: Date | null; disputed: Date | null; refunding: Date | null }[]>`
     select status, charge_id as "chargeId", transfers_due_at as due, disputed_at as disputed, refund_requested_at as refunding from orders where id = ${orderId}`);
   if (!o || o.status !== 'paid' || o.disputed || o.refunding || !o.due || o.due.getTime() > now.getTime()) return { transferred: 0, held: 0, failed: 0 };
-  const shares = await asService((tx) => tx<{ userId: string; amountCents: number; attempts: number; accountId: string | null; active: boolean | null }[]>`
+  const shares = await asPayments((tx) => tx<{ userId: string; amountCents: number; attempts: number; accountId: string | null; active: boolean | null }[]>`
     select s.user_id as "userId", s.amount_cents as "amountCents", s.attempts, a.account_id as "accountId", a.transfers_active as active
     from order_shares s left join stripe_accounts a on a.user_id = s.user_id
     where s.order_id = ${orderId} and s.status in ('scheduled', 'held') and (s.retry_at is null or s.retry_at <= ${now})`);
   let transferred = 0, held = 0, failed = 0;
   for (const s of shares) {
-    if (s.amountCents === 0) { await asService((tx) => tx`update order_shares set status = 'canceled' where order_id = ${orderId} and user_id = ${s.userId} and status in ('scheduled', 'held')`); continue; }
+    if (s.amountCents === 0) { await asPayments((tx) => tx`update order_shares set status = 'canceled' where order_id = ${orderId} and user_id = ${s.userId} and status in ('scheduled', 'held')`); continue; }
     let active = Boolean(s.active);
     try {
       if (s.accountId && !active) active = (await refreshAccountById(s.userId, s.accountId)).transfersActive;
     } catch { active = false; }
     if (!s.accountId || !active) {
       held++;
-      await asService((tx) => tx`update order_shares set status = 'held', retry_at = ${now}::timestamptz + interval '1 day'
+      await asPayments((tx) => tx`update order_shares set status = 'held', retry_at = ${now}::timestamptz + interval '1 day'
         where order_id = ${orderId} and user_id = ${s.userId} and status in ('scheduled', 'held')`);
       continue;
     }
     // Réservation sous verrou : commande toujours payée, aucun remboursement demandé, pas de litige.
-    const claimed = await asService(async (tx) => {
+    const claimed = await asPayments(async (tx) => {
       const [x] = await tx<{ ok: boolean }[]>`select (status = 'paid' and refund_requested_at is null and disputed_at is null) as ok
         from orders where id = ${orderId} for update`;
       if (!x?.ok) return false;
@@ -582,7 +582,7 @@ export async function runTransfers(orderId: string, now = new Date()) {
         amount: s.amountCents, currency: 'eur', destination: s.accountId!, transfer_group: orderId,
         ...(o.chargeId ? { source_transaction: o.chargeId } : {}), metadata: { order_id: orderId, user_id: s.userId },
       }, { idempotencyKey: `transfer-${orderId}-${s.userId}-${s.attempts}` });
-      const refunded = await asService(async (tx) => {
+      const refunded = await asPayments(async (tx) => {
         await tx`update order_shares set status = 'transferred', transfer_id = ${tr!.id}, retry_at = null, last_error = null
           where order_id = ${orderId} and user_id = ${s.userId} and status = 'transferring'`;
         const [x] = await tx<{ status: string }[]>`select status from orders where id = ${orderId}`;
@@ -593,7 +593,7 @@ export async function runTransfers(orderId: string, now = new Date()) {
       else transferred++;
     } catch (e) {
       failed++;
-      await asService((tx) => tx`update order_shares set status = 'scheduled', attempts = attempts + 1, retry_at = ${now}::timestamptz + interval '1 hour',
+      await asPayments((tx) => tx`update order_shares set status = 'scheduled', attempts = attempts + 1, retry_at = ${now}::timestamptz + interval '1 hour',
         last_error = ${(e as Error).message.slice(0, 500)} where order_id = ${orderId} and user_id = ${s.userId} and status = 'transferring'`);
     }
   }
@@ -602,12 +602,12 @@ export async function runTransfers(orderId: string, now = new Date()) {
 
 /** Parts restées « en cours » (arrêt pendant l'appel à Stripe) : on regarde chez Stripe si le virement est parti. */
 async function recoverTransferring(now: Date) {
-  const rows = await asService((tx) => tx<{ orderId: string; userId: string }[]>`select order_id as "orderId", user_id as "userId" from order_shares
+  const rows = await asPayments((tx) => tx<{ orderId: string; userId: string }[]>`select order_id as "orderId", user_id as "userId" from order_shares
     where status = 'transferring' and updated_at < ${now}::timestamptz - interval '15 minutes' limit 100`);
   for (const r of rows) {
     try {
       const tr = await findTransfer(r.orderId, r.userId);
-      await asService((tx) => tr
+      await asPayments((tx) => tr
         ? tx`update order_shares set status = 'transferred', transfer_id = ${tr.id}, retry_at = null where order_id = ${r.orderId} and user_id = ${r.userId} and status = 'transferring'`
         : tx`update order_shares set status = 'scheduled', attempts = attempts + 1, retry_at = null where order_id = ${r.orderId} and user_id = ${r.userId} and status = 'transferring'`);
     } catch (e) { console.error('part en cours', r.orderId, (e as Error).message); }
@@ -620,23 +620,23 @@ async function recoverTransferring(now: Date) {
  */
 export async function sweepPayments(now = new Date()) {
   await recoverTransferring(now);
-  const refunds = await asService((tx) => tx<{ id: string }[]>`select id from orders
+  const refunds = await asPayments((tx) => tx<{ id: string }[]>`select id from orders
     where status = 'paid' and refund_requested_at is not null and refund_requested_at < ${now}::timestamptz - interval '5 minutes' limit 100`);
   for (const o of refunds) await refundOrder(o.id, now).catch((e) => console.error('remboursement', o.id, (e as Error).message));
-  const transfers = await asService((tx) => tx<{ id: string }[]>`select distinct o.id from orders o join order_shares s on s.order_id = o.id
+  const transfers = await asPayments((tx) => tx<{ id: string }[]>`select distinct o.id from orders o join order_shares s on s.order_id = o.id
     where o.status = 'paid' and o.refund_requested_at is null and o.disputed_at is null and o.transfers_due_at <= ${now}
       and s.status in ('scheduled', 'held') and (s.retry_at is null or s.retry_at <= ${now}) limit 200`);
   for (const o of transfers) await runTransfers(o.id, now).catch((e) => console.error('virement', o.id, (e as Error).message));
-  const reversals = await asService((tx) => tx<{ id: string }[]>`select distinct o.id from orders o join order_shares s on s.order_id = o.id
+  const reversals = await asPayments((tx) => tx<{ id: string }[]>`select distinct o.id from orders o join order_shares s on s.order_id = o.id
     where o.status = 'refunded' and (s.status = 'transferred' or (s.status = 'canceled' and s.attempts > 0 and s.transfer_id is null))
       and (s.retry_at is null or s.retry_at <= ${now}) limit 200`);
   // (Une part annulée dont on a vérifié qu'aucun virement n'est parti a retry_at = infinity : elle n'est plus reprise.)
   for (const o of reversals) await reverseShares(o.id).catch((e) => console.error('reprise', o.id, (e as Error).message));
-  const undelivered = await asService((tx) => tx<{ id: string }[]>`select id from orders where status = 'paid' and refund_requested_at is null
+  const undelivered = await asPayments((tx) => tx<{ id: string }[]>`select id from orders where status = 'paid' and refund_requested_at is null
     and buyer_notified_at is null and paid_at < ${now}::timestamptz - interval '15 minutes'
     and not exists (select 1 from jobs j where j.kind = 'order_deliver' and j.payload->>'orderId' = orders.id::text and j.status in ('queued', 'running'))
     limit 100`);
-  for (const o of undelivered) await asService((tx) => enqueue(tx, 'order_deliver', { orderId: o.id }));
+  for (const o of undelivered) await asPayments((tx) => enqueue(tx, 'order_deliver', { orderId: o.id }));
   return { refunds: refunds.length, transfers: transfers.length, reversals: reversals.length, deliveries: undelivered.length };
 }
 
@@ -651,7 +651,7 @@ export async function payoutAccount(userId: string) {
 /** Crée (une seule fois) le compte Express du producteur et rend l'adresse du formulaire d'activation chez Stripe. */
 export async function startOnboarding(userId: string, rawCountry: unknown = env().STRIPE_CONNECT_COUNTRY) {
   const acctCountry = z.string().refine((c) => Object.hasOwn(EU_VAT, c), 'Pays invalide.').parse(rawCountry);
-  let [a] = await asService((tx) => tx<{ accountId: string }[]>`select account_id as "accountId" from stripe_accounts where user_id = ${userId}`);
+  let [a] = await asPayments((tx) => tx<{ accountId: string }[]>`select account_id as "accountId" from stripe_accounts where user_id = ${userId}`);
   if (!a) {
     // Propriétés de contrôle (au lieu de l'ancien « type ») : tableau de bord Express, informations collectées par Stripe,
     // et Stripe porte le risque de solde négatif du compte (exigé par Stripe pour cette plateforme ; moins de risque pour Sonikc).
@@ -664,9 +664,9 @@ export async function startOnboarding(userId: string, rawCountry: unknown = env(
       capabilities: { transfers: { requested: true } },
       metadata: { user_id: userId },
     }, { idempotencyKey: `account-${userId}` });
-    await asService((tx) => tx`insert into stripe_accounts (user_id, account_id, country) values (${userId}, ${acct.id}, ${acctCountry})
+    await asPayments((tx) => tx`insert into stripe_accounts (user_id, account_id, country) values (${userId}, ${acct.id}, ${acctCountry})
       on conflict (user_id) do nothing`);
-    [a] = await asService((tx) => tx<{ accountId: string }[]>`select account_id as "accountId" from stripe_accounts where user_id = ${userId}`);
+    [a] = await asPayments((tx) => tx<{ accountId: string }[]>`select account_id as "accountId" from stripe_accounts where user_id = ${userId}`);
   }
   const link = await stripe().accountLinks.create({
     account: a.accountId, type: 'account_onboarding',
@@ -676,14 +676,14 @@ export async function startOnboarding(userId: string, rawCountry: unknown = env(
 }
 
 export async function refreshAccount(userId: string) {
-  const [a] = await asService((tx) => tx<{ accountId: string }[]>`select account_id as "accountId" from stripe_accounts where user_id = ${userId}`);
+  const [a] = await asPayments((tx) => tx<{ accountId: string }[]>`select account_id as "accountId" from stripe_accounts where user_id = ${userId}`);
   return a ? refreshAccountById(userId, a.accountId) : null;
 }
 
 async function refreshAccountById(userId: string, accountId: string) {
   const acct = await stripe().accounts.retrieve(accountId);
   const transfersActive = acct.capabilities?.transfers === 'active' && Boolean(acct.payouts_enabled);
-  const wasActive = await asService(async (tx) => {
+  const wasActive = await asPayments(async (tx) => {
     const [prev] = await tx<{ active: boolean }[]>`select transfers_active as active from stripe_accounts where user_id = ${userId} for update`;
     await tx`update stripe_accounts set transfers_active = ${transfersActive}, details_submitted = ${Boolean(acct.details_submitted)}, updated_at = now()
       where user_id = ${userId}`;
@@ -738,7 +738,7 @@ export async function listPurchases(userId: string) {
 
 /** Page de commande : par jeton signé (acheteur sans compte), ou par un utilisateur qui y a droit. */
 export async function orderView(orderId: string) {
-  return asService(async (tx) => {
+  return asPayments(async (tx) => {
     const [o] = await tx<{ id: string; status: string; trackTitle: string; sellerName: string; licence: Record<string, unknown>; buyerEmail: string;
       country: string; netCents: number; vatRate: number; vatCents: number; grossCents: number; invoiceNo: string | null; creditNoteNo: string | null;
       paidAt: Date | null; refundedAt: Date | null; deliveredAt: Date | null; refundRequestedAt: Date | null }[]>`
@@ -758,7 +758,7 @@ export async function orderView(orderId: string) {
 
 /** Fichier d'une commande. Les fichiers audio et la licence ne sont plus servis après remboursement ; facture et avoir restent. */
 export async function orderFile(orderId: string, kind: string) {
-  const [f] = await asService((tx) => tx<{ key: string; filename: string; status: string }[]>`
+  const [f] = await asPayments((tx) => tx<{ key: string; filename: string; status: string }[]>`
     select f.storage_key as key, f.filename, o.status from order_files f join orders o on o.id = f.order_id
     where f.order_id = ${orderId} and f.kind = ${kind}`);
   if (!f) return null;

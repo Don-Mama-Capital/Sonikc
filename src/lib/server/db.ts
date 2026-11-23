@@ -32,7 +32,7 @@ export async function withUser<T>(userId: string, fn: (tx: Tx) => Promise<T>): P
   }) as Promise<T>;
 }
 
-/** Accès « service » sans RLS : réservé à l'authentification et au worker. */
+/** Accès « service » sans RLS : réservé à l'authentification et au worker (les paiements ont leur propre accès, asPayments). */
 export async function asService<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   return sql().begin(fn) as Promise<T>;
 }
@@ -46,6 +46,19 @@ export async function asApp<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
     await tx`select set_config('app.user_id', '', true)`;
     // Rôle dédié : il ne peut qu'appeler app.email_event (aucune table, aucune autre fonction).
     await tx`set local role sonikc_public`;
+    return fn(tx);
+  }) as Promise<T>;
+}
+
+/**
+ * Accès « paiement » (lot 5.0) : rôle `sonikc_payments`, limité par la base aux tables de vente et aux colonnes
+ * nécessaires (exclusivité des morceaux, emails pour prévenir). Utilisé par l'achat, le webhook Stripe, la livraison,
+ * les virements, les remboursements et les invitations de collaborateurs.
+ */
+export async function asPayments<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  return sql().begin(async (tx) => {
+    await tx`select set_config('app.user_id', '', true)`;
+    await tx`set local role sonikc_payments`;
     return fn(tx);
   }) as Promise<T>;
 }

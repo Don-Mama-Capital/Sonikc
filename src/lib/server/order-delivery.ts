@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { asService } from './db';
+import { asPayments } from './db';
 import { store } from './storage';
 import { convert } from './ffmpeg';
 import { sha256 } from './crypto';
@@ -29,7 +29,7 @@ type Order = {
 };
 
 async function loadOrder(orderId: string) {
-  const [o] = await asService((tx) => tx<Order[]>`
+  const [o] = await asPayments((tx) => tx<Order[]>`
     select o.id, o.status, o.track_title as "trackTitle", o.seller_name as "sellerName", o.seller_id as "sellerId", o.licence,
            o.buyer_email as "buyerEmail", o.country, o.net_cents as "netCents", o.vat_rate::float as "vatRate", o.vat_cents as "vatCents",
            o.gross_cents as "grossCents", o.invoice_no as "invoiceNo", o.credit_note_no as "creditNoteNo", o.paid_at as "paidAt",
@@ -52,15 +52,15 @@ async function putFile(orderId: string, kind: string, ext: string, filename: str
   const hash = sha256(buf);
   const key = `orders/${orderId}/${kind}-${hash.slice(0, 16)}.${ext}`;
   await store().put(key, buf, MAX_FILE, contentType);
-  await asService((tx) => tx`insert into order_files (order_id, kind, storage_key, filename, sha256, size_bytes)
+  await asPayments((tx) => tx`insert into order_files (order_id, kind, storage_key, filename, sha256, size_bytes)
     values (${orderId}, ${kind}, ${key}, ${filename}, ${hash}, ${buf.length}) on conflict (order_id, kind) do nothing`);
-  const [f] = await asService((tx) => tx<{ sha256: string; size: number; filename: string }[]>`
+  const [f] = await asPayments((tx) => tx<{ sha256: string; size: number; filename: string }[]>`
     select sha256, size_bytes::int as size, filename from order_files where order_id = ${orderId} and kind = ${kind}`);
   return f;
 }
 
 async function existing(orderId: string) {
-  const rows = await asService((tx) => tx<{ kind: string; sha256: string; size: number; filename: string }[]>`
+  const rows = await asPayments((tx) => tx<{ kind: string; sha256: string; size: number; filename: string }[]>`
     select kind, sha256, size_bytes::int as size, filename from order_files where order_id = ${orderId}`);
   return new Map(rows.map((r) => [r.kind, r]));
 }
@@ -95,7 +95,7 @@ export async function deliverOrder(orderId: string) {
 
   // 2. Certificat : émis une fois (la base refuse toute modification ensuite).
   const audio = o.licence.formats.filter((f) => have.has(f)).map((f) => ({ format: f, filename: have.get(f)!.filename, sha256: have.get(f)!.sha256, size: have.get(f)!.size }));
-  const shares = await asService((tx) => tx<{ handle: string; name: string; role: string; pct: number; isOwner: boolean }[]>`
+  const shares = await asPayments((tx) => tx<{ handle: string; name: string; role: string; pct: number; isOwner: boolean }[]>`
     select p.handle, p.display_name as name, s.role, s.pct::float as pct, s.is_owner as "isOwner"
     from order_shares s join profiles p on p.user_id = s.user_id where s.order_id = ${orderId} order by s.is_owner desc, s.pct desc`);
   const parties = {
@@ -103,9 +103,9 @@ export async function deliverOrder(orderId: string) {
     buyer: { email: o.buyerEmail, country: o.country },
     collaborators: shares.map((s) => ({ name: s.name, handle: s.handle, role: s.role, pct: s.pct })),
   };
-  await asService((tx) => tx`insert into licence_certificates (order_id, files, source_sha256, parties, terms)
+  await asPayments((tx) => tx`insert into licence_certificates (order_id, files, source_sha256, parties, terms)
     values (${orderId}, ${tx.json(audio)}, ${o.sourceSha}, ${tx.json(parties)}, ${tx.json(o.licence as never)}) on conflict (order_id) do nothing`);
-  const [cert] = await asService((tx) => tx<{ issuedAt: Date; files: typeof audio; sourceSha: string }[]>`
+  const [cert] = await asPayments((tx) => tx<{ issuedAt: Date; files: typeof audio; sourceSha: string }[]>`
     select issued_at as "issuedAt", files, source_sha256 as "sourceSha" from licence_certificates where order_id = ${orderId}`);
 
   // 3. Licence (avec le certificat) et facture.
@@ -153,20 +153,20 @@ export async function deliverOrder(orderId: string) {
   }
 
   // 4. Fichiers prêts, puis les emails ; « prévenu » seulement après l'envoi réussi (sinon nouvel essai, sans doublon grâce aux clés d'idempotence).
-  await asService((tx) => tx`update orders set delivered_at = coalesce(delivered_at, now()) where id = ${orderId}`);
+  await asPayments((tx) => tx`update orders set delivered_at = coalesce(delivered_at, now()) where id = ${orderId}`);
   const url = orderUrl(orderId);
   await sendMail({
     to: o.buyerEmail, tag: 'order', idempotencyKey: `order-buyer-${orderId}`, fromName: `${o.sellerName} via Sonikc`,
     subject: `Ta licence « ${o.licence.name} » pour ${o.trackTitle}`,
     text: `Merci pour ton achat !\n\nTes fichiers, ta licence et ta facture t’attendent ici :\n${url}\n\nGarde ce lien : il te permet de les retélécharger. Tu les retrouves aussi dans « Mes achats » si tu te connectes à Sonikc avec cette adresse.\n\n— Sonikc`,
   });
-  const [seller] = await asService((tx) => tx<{ email: string }[]>`select email from users where id = ${o.sellerId}`);
+  const [seller] = await asPayments((tx) => tx<{ email: string }[]>`select email from users where id = ${o.sellerId}`);
   if (seller) await sendMail({
     to: seller.email, tag: 'sale', idempotencyKey: `order-seller-${orderId}`,
     subject: `Nouvelle vente : ${o.trackTitle} (${o.licence.name})`,
     text: `Bonne nouvelle : ${o.trackTitle} vient d’être acheté (licence ${o.licence.name}, ${euros(o.netCents)} HT).\n\nLe détail et ta part sont dans « Ventes » :\n${url.replace(/\/commande\/.*/, '/app/ventes')}\n\n— Sonikc`,
   });
-  await asService((tx) => tx`update orders set buyer_notified_at = now() where id = ${orderId}`);
+  await asPayments((tx) => tx`update orders set buyer_notified_at = now() where id = ${orderId}`);
 }
 
 /** Avoir après remboursement (numéroté dans sa propre série), envoyé à l'acheteur. */
