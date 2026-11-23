@@ -8,7 +8,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   if (!sameOrigin(req)) return fail(403, 'Origine refusée.');
   const { resolution: r } = await resolveFromCookies((await params).token);
   if (r.status !== 'ok') return fail(404, 'Introuvable.');
-  const v = (await visitorId())!;
+  const b = await req.json().catch(() => ({}));
+  const v = (await visitorId(true, b?.pv))!;
   await recordView(r.ctx, v);
   return json({ favorites: await myFavorites(r.ctx), loggedIn: Boolean(r.ctx.userId), saved: await isSaved(r.ctx) });
 }

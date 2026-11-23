@@ -79,7 +79,7 @@ function BuyForm({ trackId, templateId, countries, email, onCancel }:
       const fd = new FormData(e.currentTarget);
       setBusy(true); setError(null);
       const res = await fetch('/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ trackId, templateId, email: fd.get('email'), country: fd.get('country') }) });
+        body: JSON.stringify({ trackId, templateId, email: fd.get('email'), country: fd.get('country'), waiver: fd.get('waiver') === 'on' }) });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.url) { window.location.href = data.url; return; }
       setBusy(false); setError(data.error ?? 'Le paiement n’a pas pu commencer. Réessaie.');
@@ -90,6 +90,10 @@ function BuyForm({ trackId, templateId, countries, email, onCancel }:
         <select className="input mt-1" name="country" required defaultValue="FR">
           {countries.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
         </select></label>
+      <label className="flex items-start gap-2 text-xs">
+        <input type="checkbox" name="waiver" required className="mt-0.5" data-testid="waiver" />
+        <span>Je veux recevoir mes fichiers tout de suite et je renonce à mon droit de rétractation de 14 jours (<a className="underline" href="/cgv" target="_blank" rel="noopener">conditions de vente</a>).</span>
+      </label>
       {error && <p role="alert" className="text-xs text-bad">{error}</p>}
       <div className="flex gap-2">
         <button className="btn-primary flex-1" type="submit" disabled={busy}>{busy ? 'Ouverture…' : 'Payer'}</button>

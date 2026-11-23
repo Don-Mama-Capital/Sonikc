@@ -281,6 +281,13 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
         return ok(t);
       }
       m = /^\/v1\/subscriptions\/([^/]+)$/.exec(url.pathname);
+      if (req.method === 'DELETE' && m) {
+        const sub = subscriptions.get(m[1]);
+        if (!sub) return send(404, { error: { message: 'No such subscription' } });
+        sub.status = 'canceled';
+        setTimeout(() => { emit('customer.subscription.deleted', subView(sub)).catch(() => {}); }, 20);
+        return send(200, subView(sub));
+      }
       if (req.method === 'GET' && m) {
         const sub = subscriptions.get(m[1]);
         return sub ? send(200, subView(sub)) : send(404, { error: { message: 'No such subscription' } });

@@ -9,7 +9,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   if (!r.ctx.userId) return fail(401, 'Connecte-toi pour ajouter un favori.');
   const b = await req.json().catch(() => ({}));
   try {
-    await interact(r.ctx, String(b.trackId), (await visitorId())!, b.on ? 'favorite' : 'unfavorite');
+    await interact(r.ctx, String(b.trackId), (await visitorId(true, b.pv))!, b.on ? 'favorite' : 'unfavorite');
   } catch {
     return fail(404, 'Introuvable.');
   }

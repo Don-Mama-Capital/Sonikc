@@ -217,6 +217,8 @@ const checkoutSchema = z.object({
   templateId: z.string().uuid(),
   country,
   email,
+  // Contenu numérique livré tout de suite : l'acheteur le demande et renonce à son droit de rétractation (case cochée).
+  waiver: z.literal(true, { message: 'Coche la case pour recevoir tes fichiers tout de suite.' }),
 });
 
 export async function startCheckout(raw: unknown, ctx: { buyerUserId: string | null; ip: string; now?: Date }) {
@@ -258,10 +260,11 @@ export async function startCheckout(raw: unknown, ctx: { buyerUserId: string | n
       if (x >= MAX_EXCLUSIVE_TRIES_PER_DAY) throw new Invalid('Tu as déjà commencé deux fois l’achat de cette exclusive aujourd’hui. Réessaie demain.');
     }
     const [o] = await tx<{ id: string }[]>`insert into orders (seller_id, track_id, version_id, template_id, track_title, seller_name, licence, exclusive,
-        buyer_email, buyer_user_id, country, ip_hash, net_cents, vat_rate, vat_cents, gross_cents, plan, commission_pct, commission_cents, created_at)
+        buyer_email, buyer_user_id, country, ip_hash, net_cents, vat_rate, vat_cents, gross_cents, plan, commission_pct, commission_cents, created_at,
+        withdrawal_waived_at)
       values (${found.ownerId}, ${input.trackId}, ${found.versionId}, ${offer.id}, ${found.title}, ${found.sellerName}, ${tx.json(licence)}, ${offer.exclusive},
         ${input.email}, ${ctx.buyerUserId}, ${input.country}, ${ipHash}, ${price.net}, ${price.rate}, ${price.vat}, ${price.gross}, ${plan}, ${pct},
-        ${commissionCents(price.net, pct)}, ${now}) returning id`;
+        ${commissionCents(price.net, pct)}, ${now}, ${now}) returning id`;
     if (offer.exclusive) {
       const r = await tx`update tracks set exclusive_reserved_until = ${now}::timestamptz + ${`${RESERVATION_MIN + 1} minutes`}::interval, exclusive_reserved_order = ${o.id}
         where id = ${input.trackId} and exclusive_sold_at is null and (exclusive_reserved_until is null or exclusive_reserved_until < ${now})`;

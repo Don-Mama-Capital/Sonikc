@@ -30,7 +30,7 @@ describe.skipIf(!key)('Stripe réel (mode test)', () => {
     });
     await updateShareSettings(u.id, 'track', trackId, { visibility: 'for_sale' });
     const [basic] = await listTemplates(u.id);
-    const c = await startCheckout({ trackId, templateId: basic.id, country: 'BE', email: 'smoke@example.com' }, { buyerUserId: null, ip: '203.0.113.7' });
+    const c = await startCheckout({ trackId, templateId: basic.id, country: 'BE', email: 'smoke@example.com', waiver: true }, { buyerUserId: null, ip: '203.0.113.7' });
     expect(c.url).toMatch(/^https:\/\/checkout\.stripe\.com\//);
     const [o] = await asService((tx) => tx<{ session: string }[]>`select checkout_session_id as session from orders where id = ${c.orderId}`);
     const s = await stripe().checkout.sessions.retrieve(o.session, { expand: ['payment_intent.latest_charge.balance_transaction'] });

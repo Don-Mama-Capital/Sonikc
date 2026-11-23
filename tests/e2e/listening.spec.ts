@@ -17,6 +17,9 @@ test('écoute réelle suivie : durée à ± 5 s, rechargement sans double compte
 
   const listener = await (await browser.newContext()).newPage();
   await listener.goto(link.url);
+  // Le dédoublonnage au rechargement repose sur le cookie de mesure : l'auditeur l'accepte ici
+  // (sans accord, l'écoute est comptée quand même — voir compliance.spec.ts).
+  await listener.getByTestId('consent-accept').click();
   await expect(listener.getByTestId('tracking-notice')).toContainText('voit les écoutes de ce lien');
   await listener.screenshot({ path: 'test-results/listen-notice.png' });
   const t0 = Date.now();
