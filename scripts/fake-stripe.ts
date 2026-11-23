@@ -168,6 +168,10 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
           return send(303, '', { location: s.success_url as string });
         }
         const items = ((s.line_items as Obj[]) ?? []).map((li) => {
+          if (!li.price_data) {
+            const pr = prices.get(li.price as string)!;
+            return `<li>${products.get(pr.product as string)?.name ?? 'Abonnement'} (${pr.lookup_key}) — ${(Number(pr.unit_amount) / 100).toFixed(2)} €</li>`;
+          }
           const pd = li.price_data as Obj;
           return `<li>${(pd.product_data as Obj).name} — ${(Number(pd.unit_amount) / 100).toFixed(2)} €</li>`;
         }).join('');

@@ -13,11 +13,12 @@ type Overview = Awaited<ReturnType<typeof billingOverview>>;
 const date = (d: string | null) => (d ? new Date(d).toLocaleDateString('fr-FR') : '');
 const STATUS: Record<string, string> = { trialing: 'Essai gratuit', active: 'Actif', past_due: 'Paiement en retard (Stripe réessaie)', canceled: 'Terminé', unpaid: 'Impayé', incomplete: 'Paiement à terminer' };
 
-function Meter({ label, used, max, fmt = (n: number) => n.toLocaleString('fr-FR') }: { label: string; used: number; max: number | null; fmt?: (n: number) => string }) {
+function Meter({ label, used, max, fmt = (n: number) => n.toLocaleString('fr-FR'), maxLabel }:
+  { label: string; used: number; max: number | null; fmt?: (n: number) => string; maxLabel?: string }) {
   const pct = max ? Math.min(100, Math.round((used / max) * 100)) : 0;
   return (
     <div className="space-y-1" data-testid="meter">
-      <div className="flex justify-between text-sm"><span className="text-mute">{label}</span><span>{fmt(used)}{max !== null ? ` / ${fmt(max)}` : ''}</span></div>
+      <div className="flex justify-between text-sm"><span className="text-mute">{label}</span><span>{fmt(used)}{max !== null ? ` / ${maxLabel ?? fmt(max)}` : ''}</span></div>
       {max !== null && <div className="h-1.5 rounded-full bg-line"><div className={`h-1.5 rounded-full ${pct >= 100 ? 'bg-bad' : 'bg-accent'}`} style={{ width: `${pct}%` }} /></div>}
     </div>
   );
@@ -73,7 +74,8 @@ export function BillingView() {
         )}
         <div className="grid gap-3 sm:grid-cols-2">
           <Meter label={LIMIT_LABELS.tracks.title} used={o.usage.tracks} max={o.limits.tracks} />
-          <Meter label={LIMIT_LABELS.storageGb.title} used={o.usage.storageBytes} max={o.limits.storageBytes} fmt={formatBytes} />
+          <Meter label={LIMIT_LABELS.storageGb.title} used={o.usage.storageBytes} max={o.limits.storageBytes}
+            fmt={(n) => (n ? formatBytes(n) : '0 Mo')} maxLabel={LIMIT_LABELS.storageGb.value(o.limits.storageGb)} />
           <Meter label={LIMIT_LABELS.contacts.title} used={o.usage.contacts} max={o.limits.contacts} />
           <Meter label={`${LIMIT_LABELS.emailsPerMonth.title} (ce mois-ci)`} used={o.usage.emailsThisMonth} max={o.limits.emailsPerMonth} />
         </div>

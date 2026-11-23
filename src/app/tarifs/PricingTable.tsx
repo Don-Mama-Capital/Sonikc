@@ -56,6 +56,7 @@ export function PricingTable({ loggedIn, current }: { loggedIn: boolean; current
 
       <section className="space-y-2 overflow-x-auto">
         <h2 className="text-lg font-semibold">Comparatif</h2>
+        <p className="text-xs text-mute sm:hidden">Fais glisser le tableau pour voir toutes les offres.</p>
         <table className="w-full min-w-[32rem] text-left text-sm" data-testid="compare">
           <thead><tr><th className="py-2 pr-3 font-medium text-mute">Ce qui change</th>{offerIds.map((id) => <th key={id} className="py-2 pr-3">{OFFERS[id].name}</th>)}</tr></thead>
           <tbody className="divide-y divide-line">
