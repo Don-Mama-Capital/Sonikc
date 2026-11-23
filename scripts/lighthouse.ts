@@ -50,6 +50,10 @@ const pages = [
   { name: 'morceau', url: `/app/tracks/${t.trackId}`, auth: true },
   { name: 'partage', url: sharedPath, auth: false },
   { name: 'page-publique', url: `/${handle}`, auth: false },
+  { name: 'tarifs', url: '/tarifs', auth: false },
+  { name: 'mon-offre', url: '/app/offre', auth: true },
+  { name: 'mes-donnees', url: '/compte', auth: true },
+  { name: 'confidentialite', url: '/confidentialite', auth: false },
 ];
 const chrome = await chromeLauncher.launch({ chromePath: process.env.CHROME_PATH ?? '/usr/bin/google-chrome', chromeFlags: ['--headless=new', '--no-sandbox'] });
 const out: Record<string, Record<string, number>> = {};
