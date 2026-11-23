@@ -30,7 +30,7 @@ export function TrackLicences({ trackId, inherited }: { trackId: string; inherit
             <label className="flex min-w-0 flex-1 items-center gap-2">
               <input type="checkbox" checked={r.enabled} onChange={(e) => save(r, { enabled: e.target.checked })} />
               <span className="truncate">{r.name}</span>
-              {r.formats.includes('stems') && <span className="text-xs text-mute">(bientôt : livraison des stems)</span>}
+              {r.formats.includes('stems') && <span className="text-xs text-mute">(stems pas encore livrés automatiquement : masquée à l’achat)</span>}
             </label>
             <label className="flex items-center gap-1 text-sm">
               <span className="text-mute">Prix HT</span>

@@ -1,3 +1,4 @@
+import { emailsThisMonth, limitsFor } from './plans';
 import { asService } from './db';
 import { env } from './env';
 import { sendMail } from './mail';
@@ -133,6 +134,20 @@ async function finish(c: Campaign, step: 0 | 1) {
 export async function runFollowup(campaignId: string) {
   const c = await loadCampaign(campaignId);
   if (!c || c.status !== 'sent' || c.followupStatus !== 'scheduled') return;
+  // Offre changée depuis (relances retirées) : la relance n'est pas envoyée. Sinon, dans la limite du mois.
+  const room = await asService(async (tx) => {
+    const [{ owner }] = await tx<{ owner: string }[]>`select owner_id as owner from campaigns where id = ${campaignId}`;
+    const { limits } = await limitsFor(tx, owner);
+    if (!limits.followUps) {
+      await tx`update campaigns set followup_status = 'cancelled' where id = ${campaignId} and followup_status = 'scheduled'`;
+      return 0;
+    }
+    return Math.max(0, limits.emailsPerMonth - (await emailsThisMonth(tx, owner)));
+  });
+  if (room <= 0) {
+    await asService((tx) => tx`update campaigns set followup_status = 'cancelled' where id = ${campaignId} and followup_status = 'scheduled'`);
+    return;
+  }
   await asService((tx) => tx`
     insert into email_sends (owner_id, campaign_id, contact_id, email, step, link_id)
     select s0.owner_id, s0.campaign_id, s0.contact_id, s0.email, 1, s0.link_id
@@ -142,6 +157,7 @@ export async function runFollowup(campaignId: string) {
       and not exists (select 1 from email_suppressions x where x.owner_id = s0.owner_id and x.email = lower(s0.email))
       and not exists (select 1 from listen_sessions ls where ls.link_id = s0.link_id
                       or (s0.contact_id is not null and ls.contact_id = s0.contact_id and ls.started_at >= s0.sent_at))
+    order by s0.sent_at limit ${room}
     on conflict do nothing`);
   await runCampaignSend(campaignId, 1);
 }

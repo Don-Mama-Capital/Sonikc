@@ -684,3 +684,17 @@ describe('Stripe réel : frais connus avec retard', () => {
     fake.clearFailures();
   }, 20_000);
 });
+
+describe('Lot 5.1 — commission figée sur la vente', () => {
+  it('un changement d’offre ne modifie pas la commission d’une vente déjà commencée ou payée', async () => {
+    const s = await seller('free');
+    const c = await buy(s, s.basic.id);
+    await asService((tx) => tx`update profiles set plan = 'pro' where user_id = ${s.id}`);
+    await pay(c.sessionId);
+    const o = await order(c.orderId);
+    expect(Number(o.commission_pct)).toBe(OFFERS.free.commissionPct);
+    expect(o.commission_cents).toBe(commissionCents(o.net_cents, OFFERS.free.commissionPct));
+    const c2 = await buy(s, s.basic.id);
+    expect(Number((await order(c2.orderId)).commission_pct)).toBe(OFFERS.pro.commissionPct);
+  });
+});

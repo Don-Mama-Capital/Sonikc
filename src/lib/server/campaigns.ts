@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { emailsThisMonth, fail, limitsFor } from './plans';
 import { withUser } from './db';
 import { groupContactIds } from './contacts';
 import { Invalid, NotFound } from './library';
@@ -29,6 +30,9 @@ export async function createCampaign(userId: string, raw: unknown) {
   if (when.getTime() < Date.now() - 60_000) throw new Invalid('La date d’envoi est passée.');
   if (when.getTime() > Date.now() + 90 * 86_400_000) throw new Invalid('Programmation possible jusqu’à 90 jours.');
   return withUser(userId, async (tx) => {
+    const { plan, limits } = await limitsFor(tx, userId);
+    if (input.followup && !limits.followUps) fail(plan, 'followUps');
+    if (when.getTime() > Date.now() + 5 * 60_000 && !limits.scheduledSends) fail(plan, 'scheduledSends');
     const col = input.kind === 'project' ? 'project_id' : 'track_id';
     const [t] = input.kind === 'project'
       ? await tx<{ visibility: string | null }[]>`select visibility from projects where id = ${input.id} and deleted_at is null`
@@ -47,6 +51,10 @@ export async function createCampaign(userId: string, raw: unknown) {
       order by c.created_at limit ${MAX_RECIPIENTS + 1}`;
     if (!recipients.length) throw new Invalid('Aucun destinataire : ajoute des contacts (les désinscrits sont exclus).');
     if (recipients.length > MAX_RECIPIENTS) throw new Invalid(`${MAX_RECIPIENTS} destinataires au plus par envoi.`);
+    // Emails du mois : ceux déjà comptés + ceux-ci (et leur relance éventuelle, réservée d'avance).
+    const used = await emailsThisMonth(tx, userId);
+    const need = used + recipients.length * (input.followup ? 2 : 1);
+    if (need > limits.emailsPerMonth) fail(plan, 'emailsPerMonth', need);
 
     const [c] = await tx<{ id: string }[]>`
       insert into campaigns (owner_id, ${tx(col)}, subject, body, scheduled_at, followup_days, followup_subject, followup_body, followup_status)

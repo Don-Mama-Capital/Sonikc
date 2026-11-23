@@ -1,3 +1,4 @@
+import postgres from 'postgres';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -27,7 +28,7 @@ export async function login(page: Page, email: string) {
 }
 
 /** Crée un compte complet (code + profil) et arrive sur la bibliothèque. */
-export async function signUp(page: Page) {
+export async function signUp(page: Page, plan: 'free' | 'pro' | 'studio' = 'studio') {
   const id = randomUUID().slice(0, 8);
   const email = `e2e_${id}@test.local`;
   await login(page, email);
@@ -36,7 +37,14 @@ export async function signUp(page: Page) {
   await page.getByLabel('Identifiant').fill(`prod_${id}`);
   await page.getByRole('button', { name: 'Créer mon profil' }).click();
   await expect(page).toHaveURL(/\/app$/);
+  if (plan !== 'free') await setPlan(`prod_${id}`, plan);
   return { email, handle: `prod_${id}` };
+}
+
+/** Recette : offre posée directement en base (le parcours d'abonnement a sa propre recette, lot 5.2). */
+export async function setPlan(handle: string, plan: 'free' | 'pro' | 'studio') {
+  const sql = postgres('postgres://postgres:postgres@127.0.0.1:54410/sonikc', { max: 1, onnotice: () => {} });
+  try { await sql`update profiles set plan = ${plan} where handle = ${handle}`; } finally { await sql.end(); }
 }
 
 export const fixture = (name: string) => path.resolve('tests/fixtures/generated', name);

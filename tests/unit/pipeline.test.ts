@@ -126,6 +126,26 @@ describe('Envoi et traitement d’un morceau', () => {
     expect(all.tracks[0].version?.status).toBe('ready');
   });
 
+  it('lot 5.1 : un ZIP n’importe pas au-delà de la limite de morceaux de l’offre, et le dit', async () => {
+    const u = await makeUser(undefined, 'free');
+    const { OFFERS } = await import('@/config/offers');
+    const max = OFFERS.free.limits.tracks!;
+    await asService((tx) => tx`insert into tracks (owner_id, title) select ${u.id}, 'b' || g from generate_series(1, ${max - 1}) g`);
+    const a = new Uint8Array(await readFile(path.join(dir, FIXTURES[1].file)));
+    const zip = zipSync({ 'A.mp3': a, 'B.mp3': a, 'C.mp3': a });
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'sk-'));
+    const zf = path.join(tmp, 'Trois.zip');
+    await writeFile(zf, zip);
+    await upload(u.id, zf);
+    await drain();
+    const [im] = await asService((tx) => tx<{ created: number; skipped: number; error: string }[]>`
+      select tracks_created as created, files_skipped as skipped, error from imports where owner_id = ${u.id}`);
+    expect(im.created).toBe(1);
+    expect(im.skipped).toBe(2);
+    expect(im.error).toContain('2 fichiers non importés');
+    expect(im.error).toContain(OFFERS.free.name);
+  });
+
   it('le jeton d’envoi ne vaut que pour sa clé et expire', async () => {
     const u = await makeUser();
     const t = await startUpload(u.id, { filename: 'x.wav', size: 100 });

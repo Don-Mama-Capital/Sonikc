@@ -10,6 +10,7 @@ export default async function Home() {
       <p className="max-w-xl text-lg text-mute">Range tes prods, partage-les avec un lien, vois qui appuie sur play. Gratuit pour les artistes qui écoutent.</p>
       <div className="flex gap-3">
         <Link href={user ? '/app' : '/login'} className="btn-primary">{user ? 'Ouvrir ma bibliothèque' : 'Commencer'}</Link>
+        <Link href="/tarifs" className="btn-ghost">Tarifs</Link>
       </div>
     </main>
   );

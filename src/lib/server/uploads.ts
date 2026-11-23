@@ -3,6 +3,7 @@ import { withUser } from './db';
 import { NotFound, Invalid } from './library';
 import { cleanTitle } from '../audio/title';
 import { exists, size, store } from './storage';
+import { GB, fail, limitsFor, storageUsed } from './plans';
 
 export const AUDIO_EXTS = ['wav', 'wave', 'mp3', 'aif', 'aiff', 'flac'] as const;
 export const MAX_AUDIO_BYTES = 500 * 1024 ** 2;
@@ -37,6 +38,12 @@ export async function startUpload(userId: string, input: z.input<typeof startSch
   if (p.size > max) throw new Invalid(`Fichier trop lourd (max ${Math.round(max / 1024 ** 2)} Mo).`);
 
   return withUser(userId, async (tx) => {
+    const { plan, limits } = await limitsFor(tx, userId);
+    if ((await storageUsed(tx, userId)) + p.size > limits.storageGb * GB) fail(plan, 'storageGb');
+    if (!isZip && !p.trackId && limits.tracks !== null) {
+      const [{ n }] = await tx<{ n: number }[]>`select count(*)::int as n from tracks where deleted_at is null`;
+      if (n >= limits.tracks) fail(plan, 'tracks', n + 1);
+    }
     if (p.folderId) {
       const [f] = await tx`select 1 from folders where id = ${p.folderId} and deleted_at is null`;
       if (!f) throw new NotFound('Dossier introuvable.');
