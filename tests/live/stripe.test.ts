@@ -67,6 +67,19 @@ describe.skipIf(!key)('Stripe réel (mode test)', () => {
     await stripe().accounts.del(a.id);
   });
 
+  it('Abonnements : prix TTC, TVA du pays, session d’abonnement avec essai, portail (mêmes fonctions que Sonikc)', async () => {
+    const { ensurePrice, startSubscription, portalUrl } = await import('@/lib/server/billing');
+    const { OFFERS } = await import('@/config/offers');
+    const price = await ensurePrice('pro', 'month');
+    expect(price).toMatchObject({ unit_amount: OFFERS.pro.priceMonthCents, currency: 'eur', tax_behavior: 'inclusive' });
+    expect((await ensurePrice('pro', 'month')).id).toBe(price.id); // retrouvé par sa clé, pas recréé
+    const u = await makeUser(undefined, 'free');
+    const { url } = await startSubscription(u.id, { plan: 'pro', period: 'month', country: 'FR' });
+    expect(url).toMatch(/^https:\/\/checkout\.stripe\.com\//);
+    const portal = await portalUrl(u.id);
+    expect(portal.url).toMatch(/^https:\/\/billing\.stripe\.com\//);
+  });
+
   it('Signature des webhooks : celle de Stripe est acceptée, une fausse refusée', () => {
     const payload = JSON.stringify({ id: 'evt_smoke', object: 'event', type: 'ping' });
     const header = Stripe.webhooks.generateTestHeaderString({ payload, secret: process.env.STRIPE_WEBHOOK_SECRET! });

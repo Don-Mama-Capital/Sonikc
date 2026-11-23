@@ -324,7 +324,9 @@ export async function handleWebhook(payload: string, signature: string | null) {
     const [o] = await asPayments((tx) => tx<{ id: string }[]>`select id from orders where payment_intent_id = ${pi}`);
     return o?.id ?? null;
   };
-  if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
+  if (await (await import('./billing')).handleBillingEvent(event)) {
+    // Abonnement (lot 5.2) : traité par billing.ts.
+  } else if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
     const s = event.data.object as Stripe.Checkout.Session;
     if (s.payment_status === 'paid') await confirmPayment(s.id);
   } else if (event.type === 'checkout.session.expired' || event.type === 'checkout.session.async_payment_failed') {

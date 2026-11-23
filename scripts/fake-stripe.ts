@@ -26,6 +26,10 @@ export type FakeStripe = {
   delayNext(path: RegExp, ms: number): void;
   /** Comme Stripe juste après un paiement : frais pas encore disponibles pendant n lectures. */
   feeLate(reads: number): void;
+  /** Abonnements (Stripe Billing) : modifier ou terminer comme le ferait Stripe, avec l'événement signé. */
+  updateSubscription(id: string, patch: { status?: string; price?: string; cancel_at_period_end?: boolean }): Promise<number>;
+  deleteSubscription(id: string): Promise<number>;
+  billing: { customers: Map<string, Obj>; prices: Map<string, Obj>; products: Map<string, Obj>; subscriptions: Map<string, Obj>; taxRates: Obj[]; portalConfigs: Obj[] };
   /** Envoie un événement signé quelconque (litiges…). */
   emitEvent(type: string, object: Obj): Promise<number>;
 };
@@ -57,6 +61,25 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
   const intents = new Map<string, Obj>();
   const transfers: Obj[] = [], reversals: Obj[] = [], refunds: Obj[] = [], events: Obj[] = [];
   const idem = new Map<string, unknown>();
+  const customers = new Map<string, Obj>(), prices = new Map<string, Obj>(), products = new Map<string, Obj>(), subscriptions = new Map<string, Obj>();
+  const taxRates: Obj[] = [], portalConfigs: Obj[] = [];
+  const nowS = () => Math.floor(Date.now() / 1000);
+  const subView = (sub: Obj) => {
+    const price = prices.get(sub._price as string)!;
+    const end = (sub._period_end as number);
+    return { ...Object.fromEntries(Object.entries(sub).filter(([k]) => !k.startsWith('_'))),
+      items: { object: 'list', data: [{ id: `si_${(sub.id as string).slice(4)}`, object: 'subscription_item', price, quantity: 1, current_period_end: end }] } };
+  };
+  const createSubscription = (customer: string, priceId: string, data: Obj) => {
+    const trial = Number((data as { trial_period_days?: string }).trial_period_days ?? 0);
+    const price = prices.get(priceId)!;
+    const period = (price.recurring as Obj).interval === 'year' ? 365 * 86400 : 30 * 86400;
+    const sub: Obj = { id: id('sub'), object: 'subscription', customer, status: trial ? 'trialing' : 'active', cancel_at_period_end: false,
+      trial_start: trial ? nowS() : null, trial_end: trial ? nowS() + trial * 86400 : null, metadata: (data.metadata as Obj) ?? {},
+      _price: priceId, _period_end: nowS() + (trial ? trial * 86400 : period) };
+    subscriptions.set(sub.id as string, sub);
+    return sub;
+  };
   const failures: { path: RegExp; status: number; afterSuccess: boolean }[] = [];
   const delays: { path: RegExp; ms: number }[] = [];
   let feeLateReads = 0;
@@ -90,6 +113,16 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
     const s = sessions.get(sessionId);
     if (!s) throw new Error('session inconnue');
     if (s.status !== 'open') return s;
+    if (s.mode === 'subscription') {
+      const li = (s.line_items as Obj[])[0];
+      const sub = createSubscription(s.customer as string, li.price as string, (s.subscription_data as Obj) ?? {});
+      Object.assign(s, { status: 'complete', payment_status: sub.status === 'trialing' ? 'no_payment_required' : 'paid', subscription: sub.id });
+      if (o.webhook !== false) {
+        await emit('checkout.session.completed', { ...Object.fromEntries(Object.entries(s).filter(([k]) => !['line_items', 'subscription_data', 'payment_intent_data'].includes(k))) });
+        await emit('customer.subscription.created', subView(sub));
+      }
+      return s;
+    }
     const amount = s.amount_total as number;
     const ch = { id: id('ch'), object: 'charge', amount, amount_refunded: 0, currency: 'eur', payment_intent: '', refunded: false,
       payment_method_details: { type: 'card', card: { country: o.cardCountry ?? 'FR' } }, _fee: Math.round(amount * 0.015) + 25 };
@@ -144,6 +177,21 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
           <form method="post"><label>Pays de la carte <select name="country"><option>FR</option><option>DE</option><option>BE</option><option>US</option></select></label>
           <button type="submit">Payer</button></form><a href="${s.cancel_url}">Annuler</a></body></html>`);
       }
+      m = /^\/portal\/([^/]+)$/.exec(url.pathname);
+      if (m) {
+        const sub = [...subscriptions.values()].find((x) => x.customer === m![1] && x.status !== 'canceled');
+        if (req.method === 'POST') {
+          const f = new URLSearchParams(raw);
+          if (sub && f.get('price')) await updateSubscription(sub.id as string, { price: f.get('price')! });
+          if (sub && f.get('cancel')) await updateSubscription(sub.id as string, { cancel_at_period_end: true });
+          return send(303, '', { location: url.searchParams.get('return') ?? '/' });
+        }
+        const options = [...prices.values()].filter((p) => p.active && p.lookup_key)
+          .map((p) => `<button name="price" value="${p.id}">Passer à ${p.lookup_key}</button>`).join(' ');
+        return send(200, `<!doctype html><html lang="fr"><title>Portail test</title><body><h1>Faux portail Stripe</h1>
+          <p data-testid="portal-current">${sub ? `${prices.get(sub._price as string)?.lookup_key} (${sub.status})` : 'aucun abonnement'}</p>
+          <form method="post">${options} <button name="cancel" value="1">Résilier</button></form></body></html>`);
+      }
       m = /^\/onboard\/([^/]+)$/.exec(url.pathname);
       if (m) {
         if (req.method === 'POST') { activate(m[1]); return send(303, '', { location: url.searchParams.get('return') ?? '/' }); }
@@ -177,21 +225,71 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
 
       if (req.method === 'POST' && url.pathname === '/v1/checkout/sessions') {
         const items = (body.line_items as Obj[]) ?? [];
-        const total = items.reduce((a, li) => a + Number((li.price_data as Obj).unit_amount) * Number(li.quantity ?? 1), 0);
+        if (body.mode === 'subscription') {
+          if (!customers.has(body.customer as string)) return send(400, { error: { message: 'No such customer' } });
+          if (items.some((li) => !prices.has(li.price as string))) return send(400, { error: { message: 'No such price' } });
+        }
+        const total = items.reduce((a, li) => a + Number(li.price_data ? (li.price_data as Obj).unit_amount : prices.get(li.price as string)!.unit_amount) * Number(li.quantity ?? 1), 0);
         const s: Obj = { id: id('cs'), object: 'checkout.session', status: 'open', payment_status: 'unpaid', amount_total: total, currency: 'eur',
           customer_email: body.customer_email, metadata: body.metadata ?? {}, payment_intent: null, success_url: body.success_url, cancel_url: body.cancel_url,
-          expires_at: Number(body.expires_at), line_items: items, payment_intent_data: body.payment_intent_data, client_reference_id: body.client_reference_id };
+          expires_at: Number(body.expires_at), line_items: items, payment_intent_data: body.payment_intent_data, client_reference_id: body.client_reference_id,
+          mode: body.mode ?? 'payment', customer: body.customer ?? null, subscription: null, subscription_data: body.subscription_data };
         s.url = `${base}/pay/${s.id}`;
         sessions.set(s.id as string, s);
-        const { line_items: _l, payment_intent_data: _p, ...pub } = s;
+        const { line_items: _l, payment_intent_data: _p, subscription_data: _sd, ...pub } = s;
         return ok(pub);
       }
       m = /^\/v1\/checkout\/sessions\/([^/]+)$/.exec(url.pathname);
       if (req.method === 'GET' && m) {
         const s = sessions.get(m[1]);
         if (!s) return send(404, { error: { message: 'No such checkout.session' } });
-        const { line_items: _l, payment_intent_data: _p, ...pub } = expandSession(s, expand);
+        const { line_items: _l, payment_intent_data: _p, subscription_data: _sd, ...pub } = expandSession(s, expand);
         return send(200, pub);
+      }
+      // ── Billing ──
+      if (req.method === 'POST' && url.pathname === '/v1/customers') {
+        const c = { id: id('cus'), object: 'customer', email: body.email, metadata: body.metadata ?? {} };
+        customers.set(c.id, c);
+        return ok(c);
+      }
+      if (url.pathname === '/v1/products') {
+        if (req.method === 'GET') return send(200, { object: 'list', data: [...products.values()], has_more: false });
+        const pr = { id: id('prod'), object: 'product', name: body.name, active: true, metadata: body.metadata ?? {} };
+        products.set(pr.id, pr);
+        return ok(pr);
+      }
+      if (url.pathname === '/v1/prices') {
+        if (req.method === 'GET') {
+          const keys = [...url.searchParams].filter(([k]) => k.startsWith('lookup_keys')).map(([, v]) => v);
+          return send(200, { object: 'list', has_more: false, data: [...prices.values()].filter((p) => p.active && (!keys.length || keys.includes(p.lookup_key as string))) });
+        }
+        if (body.transfer_lookup_key === 'true') for (const p of prices.values()) if (p.lookup_key === body.lookup_key) p.lookup_key = null;
+        const pr = { id: id('price'), object: 'price', active: true, currency: body.currency, unit_amount: Number(body.unit_amount), product: body.product,
+          tax_behavior: body.tax_behavior, recurring: { interval: (body.recurring as Obj)?.interval }, lookup_key: body.lookup_key ?? null, metadata: body.metadata ?? {} };
+        prices.set(pr.id, pr);
+        return ok(pr);
+      }
+      if (url.pathname === '/v1/tax_rates') {
+        if (req.method === 'GET') return send(200, { object: 'list', data: taxRates, has_more: false });
+        const t = { id: id('txr'), object: 'tax_rate', active: true, display_name: body.display_name, percentage: Number(body.percentage),
+          inclusive: body.inclusive === 'true', country: body.country, metadata: body.metadata ?? {} };
+        taxRates.push(t);
+        return ok(t);
+      }
+      m = /^\/v1\/subscriptions\/([^/]+)$/.exec(url.pathname);
+      if (req.method === 'GET' && m) {
+        const sub = subscriptions.get(m[1]);
+        return sub ? send(200, subView(sub)) : send(404, { error: { message: 'No such subscription' } });
+      }
+      if (url.pathname === '/v1/billing_portal/configurations') {
+        if (req.method === 'GET') return send(200, { object: 'list', data: portalConfigs, has_more: false });
+        const cfg = { id: id('bpc'), object: 'billing_portal.configuration', active: true, features: body.features, metadata: body.metadata ?? {} };
+        portalConfigs.push(cfg);
+        return ok(cfg);
+      }
+      if (req.method === 'POST' && url.pathname === '/v1/billing_portal/sessions') {
+        if (!customers.has(body.customer as string)) return send(400, { error: { message: 'No such customer' } });
+        return ok({ id: id('bps'), object: 'billing_portal.session', url: `${base}/portal/${body.customer}?return=${encodeURIComponent(body.return_url as string)}` });
       }
       m = /^\/v1\/charges\/([^/]+)$/.exec(url.pathname);
       if (req.method === 'GET' && m) {
@@ -259,6 +357,14 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
     }
   });
 
+  async function updateSubscription(subId: string, patch: { status?: string; price?: string; cancel_at_period_end?: boolean }) {
+    const sub = subscriptions.get(subId)!;
+    if (patch.price) sub._price = patch.price;
+    if (patch.status) sub.status = patch.status;
+    if (patch.cancel_at_period_end !== undefined) sub.cancel_at_period_end = patch.cancel_at_period_end;
+    return emit('customer.subscription.updated', subView(sub));
+  }
+
   function activate(acctId: string) {
     const a = accounts.get(acctId);
     if (a) Object.assign(a, { details_submitted: true, payouts_enabled: true, charges_enabled: true, capabilities: { transfers: 'active', card_payments: 'active' } });
@@ -287,6 +393,13 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
     async refundFromDashboard(piId) { await refund(piId, true); },
     clearFailures() { failures.length = 0; delays.length = 0; feeLateReads = 0; },
     feeLate(reads) { feeLateReads = reads; },
+    updateSubscription,
+    async deleteSubscription(subId) {
+      const sub = subscriptions.get(subId)!;
+      sub.status = 'canceled';
+      return emit('customer.subscription.deleted', subView(sub));
+    },
+    billing: { customers, prices, products, subscriptions, taxRates, portalConfigs },
     delayNext(path, ms) { delays.push({ path, ms }); },
     failNext(path, status = 500, o = {}) { failures.push({ path, status, afterSuccess: Boolean(o.afterSuccess) }); },
     emitEvent: (type, object) => emit(type, object),
