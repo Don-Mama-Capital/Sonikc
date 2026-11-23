@@ -33,9 +33,12 @@ export function fail<K extends keyof Limits>(plan: string, key: K, need?: number
   throw new LimitReached(limitMessage(plan, key, need), key);
 }
 
-/** Espace utilisé (octets) : versions enregistrées + envois en cours déclarés. */
+/** Espace utilisé (octets) : versions (taille reçue, sinon taille annoncée de l'envoi en cours) + ZIP en cours d'envoi ou de traitement. */
 export async function storageUsed(tx: Tx, userId: string) {
-  const [{ used }] = await tx<{ used: string }[]>`select coalesce(sum(size_bytes), 0)::bigint as used from track_versions where owner_id = ${userId}`;
+  const [{ used }] = await tx<{ used: string }[]>`select (
+      (select coalesce(sum(coalesce(size_bytes, declared_bytes)), 0) from track_versions where owner_id = ${userId})
+    + (select coalesce(sum(declared_bytes), 0) from imports where owner_id = ${userId} and status in ('uploading', 'processing'))
+    )::bigint as used`;
   return Number(used);
 }
 

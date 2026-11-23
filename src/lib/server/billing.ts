@@ -12,8 +12,9 @@ import { assertInvoiceReady } from '@/config/company';
 /**
  * Lot 5.2 — abonnements Stripe Billing (mode test). Les prix viennent du fichier des offres (TTC) ;
  * produits, prix, taux de TVA et configuration du portail sont créés au besoin chez Stripe, repérés par clé.
- * L'offre en vigueur (profiles.plan) est recalculée depuis l'abonnement relu chez Stripe à chaque événement :
- * l'ordre d'arrivée des webhooks n'a pas d'importance.
+ * L'offre en vigueur (profiles.plan) est recalculée à chaque événement depuis TOUS les abonnements du client relus
+ * chez Stripe, sous verrou par client : l'ordre d'arrivée des webhooks n'a pas d'importance, et deux événements
+ * rapprochés ne peuvent pas s'écraser dans le désordre.
  */
 
 export type Period = 'month' | 'year';
@@ -23,6 +24,8 @@ const paidSchema = z.enum(PAID);
 const periodSchema = z.enum(['month', 'year']);
 // Statuts qui donnent droit à l'offre : essai, actif, et impayé en cours de relance (délai de grâce).
 const ENTITLED = new Set(['trialing', 'active', 'past_due']);
+// Statuts d'un abonnement encore vivant chez Stripe (on n'en ouvre pas un second).
+const LIVE = new Set(['trialing', 'active', 'past_due', 'incomplete', 'unpaid', 'paused']);
 
 const lookupKey = (plan: PaidOffer, period: Period) => `sonikc_${plan}_${period}`;
 
@@ -76,28 +79,41 @@ const checkoutSchema = z.object({
 export async function startSubscription(userId: string, raw: unknown) {
   const input = checkoutSchema.parse(raw);
   assertInvoiceReady();
-  const [sub] = await asPayments((tx) => tx<{ status: string | null; trialUsed: boolean }[]>`
-    select status, trial_used as "trialUsed" from subscriptions where user_id = ${userId}`);
-  if (sub?.status && ENTITLED.has(sub.status)) throw new Invalid('Tu as déjà un abonnement : change d’offre depuis « Gérer mon abonnement ».');
   const customer = await ensureCustomer(userId);
-  await asPayments((tx) => tx`update subscriptions set country = ${input.country === OUTSIDE_EU ? null : input.country}, updated_at = now() where user_id = ${userId}`);
+  // Stripe fait foi (l'état local peut avoir un webhook de retard, ou un autre onglet) : un seul abonnement vivant.
+  const existing = (await stripe().subscriptions.list({ customer, status: 'all', limit: 100 })).data;
+  if (existing.some((x) => LIVE.has(x.status))) throw new Invalid('Tu as déjà un abonnement : change d’offre depuis « Gérer mon abonnement ».');
   const price = await ensurePrice(input.plan, input.period);
   const tax = await taxRateFor(input.country);
-  const trialDays = sub?.trialUsed ? 0 : OFFERS[input.plan].trialDays;
-  const session = await stripe().checkout.sessions.create({
-    mode: 'subscription', customer, locale: 'fr', client_reference_id: userId,
-    line_items: [{ price: price.id, quantity: 1, ...(tax ? { tax_rates: [tax] } : {}) }],
-    // Essai sans carte : à la fin de l'essai sans moyen de paiement, l'abonnement s'arrête (retour à l'offre gratuite).
-    ...(trialDays ? { payment_method_collection: 'if_required' as const } : {}),
-    subscription_data: {
-      metadata: { user_id: userId, sonikc_plan: input.plan },
-      ...(trialDays ? { trial_period_days: trialDays, trial_settings: { end_behavior: { missing_payment_method: 'cancel' as const } } } : {}),
-    },
-    metadata: { user_id: userId, kind: 'subscription' },
-    success_url: `${env().APP_URL}/app/offre?abonnement=ok`,
-    cancel_url: `${env().APP_URL}/app/offre`,
-  }); // pas de clé d'idempotence : chaque clic ouvre une session à jour (essai déjà utilisé, pays…)
-  return { url: session.url! };
+  // Une seule page de paiement ouverte à la fois, sous verrou : la précédente est fermée avant d'en ouvrir une autre
+  // (deux onglets ne peuvent pas aboutir à deux abonnements payés).
+  return asPayments(async (tx) => {
+    const [row] = await tx<{ trialUsed: boolean; open: string | null }[]>`select trial_used as "trialUsed", checkout_session_id as open
+      from subscriptions where user_id = ${userId} for update`;
+    if (row.open) {
+      // Une page déjà payée a créé son abonnement chez Stripe : il aurait été vu ci-dessus s'il était encore vivant.
+      const prev = await stripe().checkout.sessions.retrieve(row.open).catch(() => null);
+      if (prev?.status === 'open') await stripe().checkout.sessions.expire(row.open);
+    }
+    const trialUsed = row.trialUsed || existing.some((x) => x.trial_start);
+    const trialDays = trialUsed ? 0 : OFFERS[input.plan].trialDays;
+    const session = await stripe().checkout.sessions.create({
+      mode: 'subscription', customer, locale: 'fr', client_reference_id: userId,
+      line_items: [{ price: price.id, quantity: 1, ...(tax ? { tax_rates: [tax] } : {}) }],
+      // Essai sans carte : à la fin de l'essai sans moyen de paiement, l'abonnement s'arrête (retour à l'offre gratuite).
+      ...(trialDays ? { payment_method_collection: 'if_required' as const } : {}),
+      subscription_data: {
+        metadata: { user_id: userId, sonikc_plan: input.plan },
+        ...(trialDays ? { trial_period_days: trialDays, trial_settings: { end_behavior: { missing_payment_method: 'cancel' as const } } } : {}),
+      },
+      metadata: { user_id: userId, kind: 'subscription' },
+      success_url: `${env().APP_URL}/app/offre?abonnement=ok`,
+      cancel_url: `${env().APP_URL}/app/offre`,
+    }); // pas de clé d'idempotence : chaque clic ouvre une session à jour (essai déjà utilisé, pays…)
+    await tx`update subscriptions set checkout_session_id = ${session.id}, country = ${input.country === OUTSIDE_EU ? null : input.country},
+      updated_at = now() where user_id = ${userId}`;
+    return { url: session.url! };
+  });
 }
 
 /** Portail Stripe : changer d'offre ou de période, moyen de paiement, factures, résiliation (en fin de période). */
@@ -141,44 +157,58 @@ function planOfSubscription(s: Stripe.Subscription): { plan: PaidOffer | null; p
   return { plan: plan === 'pro' || plan === 'studio' ? plan : null, period };
 }
 
+const PLAN_RANK: Record<string, number> = { pro: 1, studio: 2 };
+
 /**
- * Synchronise un abonnement depuis Stripe (relu, donc à jour quel que soit l'ordre des événements) et en déduit l'offre.
- * Rend l'offre en vigueur.
+ * Synchronise un client depuis Stripe : relit tous ses abonnements (sous verrou par client, donc à jour et dans l'ordre)
+ * et retient celui qui donne droit à la meilleure offre, sinon le plus récent. Rend l'offre en vigueur.
  */
-export async function syncSubscription(subscriptionId: string): Promise<OfferId | null> {
-  const s = await stripe().subscriptions.retrieve(subscriptionId);
-  const customer = typeof s.customer === 'string' ? s.customer : s.customer.id;
-  const { plan, period } = planOfSubscription(s);
-  const entitled = Boolean(plan && ENTITLED.has(s.status));
-  const item = s.items.data[0] as (Stripe.SubscriptionItem & { current_period_end?: number }) | undefined;
-  const periodEnd = item?.current_period_end ?? (s as unknown as { current_period_end?: number }).current_period_end ?? null;
+export async function syncCustomer(customer: string): Promise<OfferId | null> {
   return asPayments(async (tx) => {
-    const [row] = await tx<{ userId: string; subscriptionId: string | null }[]>`select user_id as "userId", subscription_id as "subscriptionId"
-      from subscriptions where customer_id = ${customer} for update`;
+    const [row] = await tx<{ userId: string }[]>`select user_id as "userId" from subscriptions where customer_id = ${customer} for update`;
     if (!row) return null; // client inconnu : rien à faire
-    // Un ancien abonnement terminé ne doit pas écraser le nouveau.
-    if (row.subscriptionId && row.subscriptionId !== s.id && !entitled) return null;
-    await tx`update subscriptions set subscription_id = ${s.id}, plan = ${plan}, period = ${period}, status = ${s.status},
+    const all = (await stripe().subscriptions.list({ customer, status: 'all', limit: 100 })).data;
+    const scored = all.map((x) => ({ x, ...planOfSubscription(x) }))
+      .map((v) => ({ ...v, entitled: Boolean(v.plan && ENTITLED.has(v.x.status)) }))
+      .sort((a, b) => Number(b.entitled) - Number(a.entitled) || (PLAN_RANK[b.plan ?? ''] ?? 0) - (PLAN_RANK[a.plan ?? ''] ?? 0) || b.x.created - a.x.created);
+    const best = scored[0];
+    const trialUsed = all.some((x) => x.trial_start);
+    if (!best) {
+      await tx`update subscriptions set trial_used = trial_used or ${trialUsed}, updated_at = now() where user_id = ${row.userId}`;
+      await tx`update profiles set plan = ${FREE} where user_id = ${row.userId}`;
+      return FREE;
+    }
+    const s = best.x;
+    const item = s.items.data[0] as (Stripe.SubscriptionItem & { current_period_end?: number }) | undefined;
+    const periodEnd = item?.current_period_end ?? (s as unknown as { current_period_end?: number }).current_period_end ?? null;
+    await tx`update subscriptions set subscription_id = ${s.id}, plan = ${best.plan}, period = ${best.period}, status = ${s.status},
       current_period_end = ${periodEnd ? new Date(periodEnd * 1000) : null}, trial_end = ${s.trial_end ? new Date(s.trial_end * 1000) : null},
-      cancel_at_period_end = ${s.cancel_at_period_end}, trial_used = trial_used or ${Boolean(s.trial_start)}, updated_at = now()
+      cancel_at_period_end = ${s.cancel_at_period_end}, trial_used = trial_used or ${trialUsed}, updated_at = now()
       where user_id = ${row.userId}`;
-    const effective: OfferId = entitled ? plan! : FREE;
+    const effective: OfferId = best.entitled ? best.plan! : FREE;
     await tx`update profiles set plan = ${effective} where user_id = ${row.userId}`;
     return effective;
   });
 }
 
+/** Synchronise à partir d'un abonnement (relu chez Stripe pour connaître son client). */
+export async function syncSubscription(subscriptionId: string): Promise<OfferId | null> {
+  const s = await stripe().subscriptions.retrieve(subscriptionId);
+  return syncCustomer(typeof s.customer === 'string' ? s.customer : s.customer.id);
+}
+
 /** Événements d'abonnement du webhook. Rend true si l'événement a été traité ici. */
 export async function handleBillingEvent(event: Stripe.Event) {
   if (event.type.startsWith('customer.subscription.')) {
-    await syncSubscription((event.data.object as Stripe.Subscription).id);
+    const c = (event.data.object as Stripe.Subscription).customer;
+    await syncCustomer(typeof c === 'string' ? c : c.id);
     return true;
   }
   if (event.type === 'checkout.session.completed') {
     const cs = event.data.object as Stripe.Checkout.Session;
     if (cs.mode !== 'subscription') return false;
-    const sub = typeof cs.subscription === 'string' ? cs.subscription : cs.subscription?.id;
-    if (sub) await syncSubscription(sub);
+    const c = typeof cs.customer === 'string' ? cs.customer : cs.customer?.id;
+    if (c) await syncCustomer(c);
     return true;
   }
   return false;

@@ -36,6 +36,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (Date.now() - lastHousekeeping > 3600_000) {
       lastHousekeeping = Date.now();
       await housekeeping().then((r) => console.log('ménage', r), (e) => console.error('ménage en échec', e));
+      // Fichiers des comptes supprimés dont l'effacement a échoué : nouvel essai.
+      const { removePendingFiles } = await import('../src/lib/server/account');
+      await removePendingFiles().then((n) => n && console.log('fichiers de comptes supprimés', n), (e) => console.error('effacement en échec', e));
     }
     // Paiements : reprise de tout ce qui a échoué (remboursements, virements, reprises, livraisons).
     if (Date.now() - lastSweep > 10 * 60_000) {

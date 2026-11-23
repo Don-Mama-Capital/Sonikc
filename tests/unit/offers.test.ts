@@ -2,7 +2,9 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { asService } from '@/lib/server/db';
-import { startUpload } from '@/lib/server/uploads';
+import { completeUpload, startUpload } from '@/lib/server/uploads';
+import { restoreTrack } from '@/lib/server/library';
+import { exists, store } from '@/lib/server/storage';
 import { updateShareSettings } from '@/lib/server/sharing';
 import { trackStats, linkFunnel } from '@/lib/server/listening';
 import { createContact, importContacts } from '@/lib/server/contacts';
@@ -55,6 +57,34 @@ describe('Lot 5.1 — chaque limite du fichier des offres est appliquée côté 
       values (${t}, ${u.id}, 1, 'v1', 'a.wav', 'k', ${quota - 1000})`);
     await expectLimit(startUpload(u.id, { filename: 'b.wav', size: 2000, trackId: t }), 'storageGb');
     await expect(startUpload(u.id, { filename: 'b.wav', size: 500, trackId: t })).resolves.toBeTruthy();
+  });
+
+  it('stockage : les envois commencés comptent tout de suite ; un fichier plus lourd qu’annoncé est refusé', async () => {
+    const u = await makeUser(undefined, 'free');
+    const quota = limits('free').storageGb * 1e9;
+    const share = 450_000_000; // sous la taille maximale d'un fichier
+    const n = Math.floor(quota / share);
+    for (let i = 0; i < n; i++) await startUpload(u.id, { filename: `a${i}.wav`, size: share });
+    await expectLimit(startUpload(u.id, { filename: 'z.wav', size: share }), 'storageGb');
+    await expectLimit(startUpload(u.id, { filename: 'z.zip', size: 250_000_000 }), 'storageGb');
+    // Annoncé 10 octets, reçu 2000 : refusé, fichier effacé.
+    const tk = await startUpload(u.id, { filename: 'petit.wav', size: 10 });
+    const [v] = await asService((tx) => tx<{ key: string }[]>`select original_key as key from track_versions where id = ${tk.id}`);
+    await store().put(v.key, Buffer.alloc(2000), 2000);
+    await expect(completeUpload(u.id, 'version', tk.id)).rejects.toThrow('plus lourd');
+    expect(await exists(v.key)).toBe(false);
+  });
+
+  it('morceaux : restaurer depuis la corbeille compte aussi dans la limite', async () => {
+    const u = await makeUser(undefined, 'free');
+    const max = limits('free').tracks!;
+    await asService((tx) => tx`insert into tracks (owner_id, title) select ${u.id}, 'b' || g from generate_series(1, ${max}) g`);
+    const [t] = await asService((tx) => tx<{ id: string }[]>`update tracks set deleted_at = now()
+      where id = (select id from tracks where owner_id = ${u.id} limit 1) returning id`);
+    await asService((tx) => tx`insert into tracks (owner_id, title) values (${u.id}, 'nouveau')`);
+    await expectLimit(restoreTrack(u.id, t.id), 'tracks');
+    await asService((tx) => tx`update tracks set deleted_at = now() where owner_id = ${u.id} and title = 'nouveau'`);
+    await expect(restoreTrack(u.id, t.id)).resolves.toBeUndefined();
   });
 
   it('mot de passe sur un partage : réservé aux offres qui l’incluent', async () => {

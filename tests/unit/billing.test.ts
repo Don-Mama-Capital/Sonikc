@@ -133,6 +133,34 @@ describe('Lot 5.2 — abonnements (faux Stripe)', () => {
     expect(await sharedFile(r.ctx, r.meta, shared.versionId, 'original')).toMatchObject({ key: `o/${shared.trackId}` });
   });
 
+  it('un seul abonnement : refusé si Stripe en a déjà un (même avant le webhook) ; une seule page de paiement ouverte', async () => {
+    const u = await makeUser(undefined, 'free');
+    const first = await startSubscription(u.id, { plan: 'pro', period: 'month', country: 'FR' });
+    const second = await startSubscription(u.id, { plan: 'studio', period: 'month', country: 'FR' });
+    // Deux onglets : la première page est fermée, seule la dernière peut aboutir.
+    expect(fake.state.sessions.get(sessionOf(first.url))!.status).toBe('expired');
+    await fake.pay(sessionOf(first.url));
+    expect(fake.state.sessions.get(sessionOf(first.url))!.status).toBe('expired');
+    // Paiement sans webhook (état local en retard) : Stripe fait foi, pas de second abonnement.
+    await fake.pay(sessionOf(second.url), { webhook: false });
+    expect(await planOf(u.id)).toBe('free');
+    await expect(startSubscription(u.id, { plan: 'pro', period: 'year', country: 'FR' })).rejects.toThrow('déjà un abonnement');
+    expect([...fake.billing.subscriptions.values()].filter((x) => (x.metadata as { user_id?: string }).user_id === u.id)).toHaveLength(1);
+  });
+
+  it('événements rapprochés ou dans le désordre : l’état final est toujours celui de Stripe', async () => {
+    const u = await makeUser(undefined, 'free');
+    await subscribe(u.id);
+    const sub = await subOf(u.id);
+    // L'abonnement est résilié chez Stripe, puis un vieil événement « actif » arrive en même temps que celui de la résiliation.
+    const live = fake.billing.subscriptions.get(sub.subscription_id)!;
+    live.status = 'canceled';
+    const old = { id: sub.subscription_id, object: 'subscription', customer: sub.customer_id, status: 'active', items: { data: [] } };
+    await Promise.all([fake.emitEvent('customer.subscription.updated', old), fake.emitEvent('customer.subscription.deleted', { ...old, status: 'canceled' })]);
+    expect(await planOf(u.id)).toBe('free');
+    expect((await subOf(u.id)).status).toBe('canceled');
+  });
+
   it('l’offre ne se change que par l’accès « paiement » (jamais par l’app)', async () => {
     const u = await makeUser(undefined, 'free');
     await expect(withUser(u.id, (tx) => tx`update profiles set plan = 'studio' where user_id = ${u.id}`)).rejects.toThrow(/permission denied/);

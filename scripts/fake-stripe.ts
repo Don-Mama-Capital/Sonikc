@@ -74,7 +74,7 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
     const trial = Number((data as { trial_period_days?: string }).trial_period_days ?? 0);
     const price = prices.get(priceId)!;
     const period = (price.recurring as Obj).interval === 'year' ? 365 * 86400 : 30 * 86400;
-    const sub: Obj = { id: id('sub'), object: 'subscription', customer, status: trial ? 'trialing' : 'active', cancel_at_period_end: false,
+    const sub: Obj = { id: id('sub'), object: 'subscription', customer, created: nowS() + subscriptions.size, status: trial ? 'trialing' : 'active', cancel_at_period_end: false,
       trial_start: trial ? nowS() : null, trial_end: trial ? nowS() + trial * 86400 : null, metadata: (data.metadata as Obj) ?? {},
       _price: priceId, _period_end: nowS() + (trial ? trial * 86400 : period) };
     subscriptions.set(sub.id as string, sub);
@@ -243,6 +243,15 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
         const { line_items: _l, payment_intent_data: _p, subscription_data: _sd, ...pub } = s;
         return ok(pub);
       }
+      m = /^\/v1\/checkout\/sessions\/([^/]+)\/expire$/.exec(url.pathname);
+      if (req.method === 'POST' && m) {
+        const s = sessions.get(m[1]);
+        if (!s) return send(404, { error: { message: 'No such checkout.session' } });
+        if (s.status !== 'open') return send(400, { error: { message: 'Only open sessions can be expired' } });
+        s.status = 'expired';
+        const { line_items: _l, payment_intent_data: _p, subscription_data: _sd, ...pub } = s;
+        return send(200, pub);
+      }
       m = /^\/v1\/checkout\/sessions\/([^/]+)$/.exec(url.pathname);
       if (req.method === 'GET' && m) {
         const s = sessions.get(m[1]);
@@ -279,6 +288,23 @@ export async function startFakeStripe(opts: { port?: number; webhookSecret: stri
           inclusive: body.inclusive === 'true', country: body.country, metadata: body.metadata ?? {} };
         taxRates.push(t);
         return ok(t);
+      }
+      if (req.method === 'GET' && url.pathname === '/v1/subscriptions') {
+        const customer = url.searchParams.get('customer');
+        const all = url.searchParams.get('status') === 'all';
+        const data = [...subscriptions.values()].filter((x) => x.customer === customer && (all || x.status !== 'canceled'))
+          .sort((a, b) => Number(b.created) - Number(a.created)).map(subView);
+        return send(200, { object: 'list', data, has_more: false });
+      }
+      m = /^\/v1\/customers\/([^/]+)$/.exec(url.pathname);
+      if (req.method === 'DELETE' && m) {
+        if (!customers.has(m[1])) return send(404, { error: { message: 'No such customer' } });
+        customers.delete(m[1]);
+        for (const sub of subscriptions.values()) if (sub.customer === m[1] && sub.status !== 'canceled') {
+          sub.status = 'canceled';
+          setTimeout(() => { emit('customer.subscription.deleted', subView(sub)).catch(() => {}); }, 20);
+        }
+        return send(200, { id: m[1], object: 'customer', deleted: true });
       }
       m = /^\/v1\/subscriptions\/([^/]+)$/.exec(url.pathname);
       if (req.method === 'DELETE' && m) {

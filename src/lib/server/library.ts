@@ -183,6 +183,13 @@ export async function trashTrack(userId: string, trackId: string) {
 export async function restoreTrack(userId: string, trackId: string) {
   uuid.parse(trackId);
   await withUser(userId, async (tx) => {
+    // Lot 5.1 : un morceau restauré compte dans la limite de morceaux de l'offre.
+    const { limitsFor, fail } = await import('./plans');
+    const { plan, limits } = await limitsFor(tx, userId);
+    if (limits.tracks !== null) {
+      const [{ n }] = await tx<{ n: number }[]>`select count(*)::int as n from tracks where deleted_at is null`;
+      if (n >= limits.tracks) fail(plan, 'tracks', n + 1);
+    }
     // Si son dossier a disparu entre-temps, le morceau revient à la racine.
     const r = await tx`
       update tracks t set deleted_at = null,

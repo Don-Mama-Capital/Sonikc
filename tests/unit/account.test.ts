@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { asService } from '@/lib/server/db';
-import { deleteAccount, exportAccount } from '@/lib/server/account';
+import { deleteAccount, exportAccount, removePendingFiles } from '@/lib/server/account';
+import { signInGoogle } from '@/lib/server/google';
+import { createProfile } from '@/lib/server/auth';
 import { startSubscription } from '@/lib/server/billing';
 import { handleWebhook, startCheckout } from '@/lib/server/commerce';
 import { exists, store } from '@/lib/server/storage';
@@ -54,7 +56,10 @@ describe('Lot 5.3 — export et suppression du compte', () => {
     expect(data.contacts).toHaveLength(1);
     expect(data.liens_de_partage).toHaveLength(1);
     expect(data.tes_ecoutes).toHaveLength(1);
+    expect(data.versions).toHaveLength(1);
+    for (const k of ['tes_ouvertures_de_liens', 'tes_telechargements_et_favoris', 'membres_des_groupes', 'imports', 'achats', 'certificats']) expect(data[k]).toBeDefined();
     const text = JSON.stringify(data);
+    expect(text).not.toContain('"visitor"');
     expect(text).not.toContain('Son beat');
     expect(text).not.toContain('secret-hash');
     expect(text).not.toContain(r.key);
@@ -79,8 +84,9 @@ describe('Lot 5.3 — export et suppression du compte', () => {
     // Une vente (gardée pour la loi) et un abonnement en cours.
     await asService(async (tx) => {
       await tx`insert into orders (seller_id, track_title, seller_name, licence, exclusive, buyer_email, country, net_cents, vat_rate, vat_cents, gross_cents,
-        plan, commission_pct, commission_cents, status, paid_at, invoice_no)
-        values (${r.u.id}, 'Mon beat', 'Prod', '{}'::jsonb, false, 'client@x.fr', 'FR', 2900, 20, 580, 3480, 'free', 10, 290, 'paid', now(), ${`FT-${r.u.id.slice(0, 8)}`})`;
+        plan, commission_pct, commission_cents, status, paid_at, invoice_no, delivered_at)
+        values (${r.u.id}, 'Mon beat', 'Prod', '{}'::jsonb, false, 'client@x.fr', 'FR', 2900, 20, 580, 3480, 'free', 10, 290, 'paid', now(), ${`FT-${r.u.id.slice(0, 8)}`}, now())`;
+      await tx`update users set google_sub = ${`g-${r.u.id}`} where id = ${r.u.id}`;
     });
     await asService((tx) => tx`update profiles set plan = 'free' where user_id = ${r.u.id}`);
     const { url } = await startSubscription(r.u.id, { plan: 'pro', period: 'month', country: 'FR' });
@@ -100,9 +106,40 @@ describe('Lot 5.3 — export et suppression du compte', () => {
     expect(await asService((tx) => tx`select 1 from sessions where user_id = ${r.u.id}`)).toEqual([]);
     expect(await asService((tx) => tx`select 1 from orders where seller_id = ${r.u.id} and status = 'paid'`)).toHaveLength(1);
     expect(await exists(r.key)).toBe(false);
-    // L'identifiant d'origine est libre ; le compte supprimé ne peut plus être supprimé ni exporté.
+    // Le compte supprimé ne peut plus être supprimé ni exporté.
     await expect(exportAccount(r.u.id)).rejects.toThrow();
     await expect(deleteAccount(r.u.id, 'x')).rejects.toThrow();
+    // Se reconnecter avec Google crée un compte neuf : le compte supprimé ne revient pas.
+    const again = await signInGoogle({ sub: `g-${r.u.id}`, email: `nouveau${Date.now()}@gmail.com`, name: null });
+    expect(again.userId).not.toBe(r.u.id);
+    // L'ancien identifiant n'est jamais réattribué (il figure sur les licences émises).
+    await expect(createProfile(again.userId, r.u.handle, 'Imposteur')).rejects.toThrow('déjà pris');
+    expect(await asService((tx) => tx`select 1 from users where id = ${r.u.id} and google_sub is not null`)).toEqual([]);
+  });
+
+  it('5. suppression refusée tant qu’une vente est en cours de paiement ou pas encore livrée', async () => {
+    const r = await richUser();
+    const insert = (status: string, delivered: boolean) => asService((tx) => tx`insert into orders (seller_id, track_id, track_title, seller_name, licence, exclusive,
+      buyer_email, country, net_cents, vat_rate, vat_cents, gross_cents, plan, commission_pct, commission_cents, status, paid_at, invoice_no, delivered_at)
+      values (${r.u.id}, ${r.trackId}, 'Mon beat', 'Prod', '{}'::jsonb, false, 'client@x.fr', 'FR', 2900, 20, 580, 3480, 'free', 10, 290, ${status},
+        ${status === 'paid' ? new Date() : null}, ${status === 'paid' ? `FT-p${Date.now()}` : null}, ${delivered ? new Date() : null}) returning id`);
+    const [pending] = await insert('pending', false);
+    await expect(deleteAccount(r.u.id, r.u.handle)).rejects.toThrow('est en cours');
+    await asService((tx) => tx`update orders set status = 'expired' where id = ${pending.id}`);
+    await insert('paid', false);
+    await expect(deleteAccount(r.u.id, r.u.handle)).rejects.toThrow('est en cours');
+    expect(await exists(r.key)).toBe(true);
+    expect(await asService((tx) => tx`select 1 from sessions where user_id = ${r.u.id}`)).toHaveLength(1);
+  });
+
+  it('fichiers : un effacement qui échoue est noté puis repris', async () => {
+    await asService((tx) => tx`insert into pending_file_removals (key) values ('u/absent/x.wav') on conflict do nothing`);
+    const key = `u/test/${Date.now()}.wav`;
+    await store().put(key, Buffer.from('x'), 10);
+    await asService((tx) => tx`insert into pending_file_removals (key) values (${key})`);
+    expect(await removePendingFiles()).toBeGreaterThanOrEqual(2);
+    expect(await exists(key)).toBe(false);
+    expect(await asService((tx) => tx`select 1 from pending_file_removals where key = ${key}`)).toEqual([]);
   });
 
   it('rétractation : l’achat exige la renonciation expresse, horodatée sur la commande', async () => {

@@ -84,6 +84,9 @@ describe.skipIf(!key)('Stripe réel (mode test)', () => {
     const payload = JSON.stringify({ id: 'evt_smoke', object: 'event', type: 'ping' });
     const header = Stripe.webhooks.generateTestHeaderString({ payload, secret: process.env.STRIPE_WEBHOOK_SECRET! });
     expect(verifyWebhook(payload, header).id).toBe('evt_smoke');
-    expect(() => verifyWebhook(payload, header.replace(/v1=./, 'v1=0'))).toThrow();
+    // Altère toujours la signature (remplacer par « 0 » ne change rien si elle commence déjà par 0 : 1 fois sur 16).
+    const forged = header.replace(/v1=(.)/, (_, c: string) => `v1=${c === '0' ? '1' : '0'}`);
+    expect(forged).not.toBe(header);
+    expect(() => verifyWebhook(payload, forged)).toThrow();
   });
 });
