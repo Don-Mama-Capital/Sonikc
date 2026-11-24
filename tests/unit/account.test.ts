@@ -151,10 +151,14 @@ describe('Lot 5.3 — export et suppression du compte', () => {
     });
     await expect(deleteAccount(r.u.id, r.u.handle)).rejects.toThrow('Il te reste 5,12');
     expect(await exists(r.key)).toBe(true);
-    // Renoncer explicitement : la suppression passe (compte anonymisé, la part reste notée, la renonciation datée).
-    expect((await deleteAccount(r.u.id, r.u.handle, { renounce: true })).outcome).toBe('anonymized');
+    // Renoncer à un montant plus petit que celui dû (vente arrivée entre-temps) : toujours refusé.
+    await expect(deleteAccount(r.u.id, r.u.handle, { renounceCents: 500 })).rejects.toThrow('Il te reste 5,12');
+    // Renoncer au montant affiché : la suppression passe (compte anonymisé, renonciation datée, la part sort des virements).
+    expect((await deleteAccount(r.u.id, r.u.handle, { renounceCents: 512 })).outcome).toBe('anonymized');
     const [u] = await asService((tx) => tx<{ at: Date | null }[]>`select shares_renounced_at as at from users where id = ${r.u.id}`);
     expect(u.at).not.toBeNull();
+    const [sh] = await asService((tx) => tx<{ retry: string }[]>`select retry_at::text as retry from order_shares where user_id = ${r.u.id}`);
+    expect(sh.retry).toBe('infinity');
     expect(await exists(r.key)).toBe(false);
   });
 
@@ -169,7 +173,25 @@ describe('Lot 5.3 — export et suppression du compte', () => {
       await tx`insert into order_shares (order_id, user_id, is_owner, pct, amount_cents, status) values (${await mk(false)}, ${r.u.id}, false, 20, 300, 'disputed')`;
       await tx`insert into order_shares (order_id, user_id, is_owner, pct, amount_cents, status) values (${await mk(true)}, ${r.u.id}, false, 20, 300, 'held')`;
     });
+    expect((await deleteAccount(r.u.id, r.u.handle, { renounceCents: 99_999 })).outcome).toBe('anonymized');
+    // Rien n'était dû : aucune renonciation notée.
+    expect((await asService((tx) => tx<{ at: Date | null }[]>`select shares_renounced_at as at from users where id = ${r.u.id}`))[0].at).toBeNull();
+  });
+
+  it('suppression : les invitations où tu es collaborateur partent aussi', async () => {
+    const r = await richUser();
+    const owner = await makeUser();
+    await asService(async (tx) => {
+      const [t] = await tx<{ id: string }[]>`insert into tracks (owner_id, title) values (${owner.id}, 'X') returning id`;
+      await tx`insert into track_splits (track_id, owner_id, collaborator_id, pct) values (${t.id}, ${owner.id}, ${r.u.id}, 10)`;
+      await tx`insert into split_invite_log (owner_id, collaborator_id) values (${owner.id}, ${r.u.id})`;
+      await tx`insert into orders (seller_id, track_title, seller_name, licence, exclusive, buyer_email, country, net_cents, vat_rate, vat_cents, gross_cents,
+        plan, commission_pct, commission_cents, status, paid_at, invoice_no, delivered_at) values (${r.u.id}, 'B', 'P', '{}'::jsonb, false, 'c@x.fr', 'FR',
+        100, 20, 20, 120, 'free', 10, 10, 'paid', now(), ${`FT-i${Date.now()}`}, now())`;
+    });
+    const cols = await asService((tx) => tx<{ t: string }[]>`select table_name as t from information_schema.columns where table_schema = 'public' and column_name = 'collaborator_id'`);
     expect((await deleteAccount(r.u.id, r.u.handle)).outcome).toBe('anonymized');
+    for (const { t } of cols) expect(await asService((tx) => tx`select 1 from ${tx(t)} where collaborator_id = ${r.u.id}`), t).toEqual([]);
   });
 
   it('accès « compte » : il ne voit que les lignes du compte concerné', async () => {

@@ -36,11 +36,11 @@ export function AccountView({ confirmWord }: { confirmWord: string }) {
         <p className="text-sm">C’est définitif. Pense à télécharger tes données avant.</p>
         <form className="flex flex-wrap items-end gap-2" onSubmit={async (e) => {
           e.preventDefault(); setBusy(true); setError(null);
-          const res = await fetch('/api/account/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm, renounce }) });
+          const res = await fetch('/api/account/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm, renounceCents: renounce && owed !== null ? owed : undefined }) });
           if (res.ok) { window.location.href = '/?compte=supprime'; return; }
           const b = await res.json().catch(() => ({}));
           setBusy(false); setError(b.error ?? 'La suppression a échoué.');
-          if (typeof b.owedCents === 'number') setOwed(b.owedCents);
+          if (typeof b.owedCents === 'number') { setOwed(b.owedCents); setRenounce(false); }
         }}>
           <label className="block text-sm"><span className="text-mute">Tape <strong className="text-text">{confirmWord}</strong> pour confirmer</span>
             <input className="input mt-1" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" data-testid="delete-confirm" /></label>

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { asAccount, asPayments, withUser, type Tx } from './db';
+import { asAccount, withUser, type Tx } from './db';
 import { Invalid, NotFound } from './library';
 import { store } from './storage';
 import { stripe } from './stripe';
@@ -101,7 +101,7 @@ export async function exportAccount(userId: string) {
  * Refusée tant qu'une vente est en cours de paiement ou pas encore livrée (l'acheteur doit recevoir ses fichiers).
  * Si de l'argent de ventes t'est dû sans compte de reversement : refusée, sauf si tu y renonces explicitement.
  */
-export async function deleteAccount(userId: string, confirm: unknown, opts: { renounce?: boolean } = {}) {
+export async function deleteAccount(userId: string, confirm: unknown, opts: { renounceCents?: number } = {}) {
   const [p] = await withUser(userId, (tx) => tx<{ handle: string }[]>`select handle from profiles where user_id = ${userId}`);
   const [u] = await asAccount(userId, (tx) => tx<{ email: string; deletedAt: Date | null }[]>`select email, deleted_at as "deletedAt" from users where id = ${userId}`);
   if (!u || u.deletedAt) throw new NotFound();
@@ -109,19 +109,21 @@ export async function deleteAccount(userId: string, confirm: unknown, opts: { re
   if (z.string().trim().toLowerCase().safeParse(confirm).data !== expected.toLowerCase()) {
     throw new Invalid(`Pour confirmer, tape exactement : ${expected}`);
   }
-  const renounce = opts.renounce === true;
+  // Renonciation : vaut pour le montant que tu as vu (pas pour une vente arrivée entre-temps).
+  const renounceCents = Number.isInteger(opts.renounceCents) && opts.renounceCents! > 0 ? opts.renounceCents! : 0;
   // Compte de reversement : état relu chez Stripe (la valeur gardée peut dater), pour ne pas te dire « active » à tort.
   await refreshAccount(userId).catch(() => null);
   await asAccount(userId, async (tx) => {
     if (await openSales(tx, userId)) throw new Invalid(SALE_PENDING);
-    await moneyOwed(tx, userId, renounce);
+    await moneyOwed(tx, renounceCents);
   });
 
   // 1. Abonnement. D'abord l'état relu chez Stripe (l'essai éventuel est noté : il reste unique par personne),
   //    puis le client Stripe est supprimé (abonnement arrêté tout de suite, plus de données chez Stripe).
   const [sub] = await asAccount(userId, (tx) => tx<{ customerId: string }[]>`select customer_id as "customerId" from subscriptions where user_id = ${userId}`);
   if (sub) {
-    await syncCustomer(sub.customerId);
+    // Client déjà supprimé chez Stripe (essai précédent, ou supprimé à la main) : rien à relire, l'essai était déjà noté.
+    await syncCustomer(sub.customerId).catch((e: { code?: string }) => { if (e?.code !== 'resource_missing') throw e; });
     await stripe().customers.del(sub.customerId, {}, { idempotencyKey: `delete-account-${userId}` }).catch((e: { code?: string }) => {
       if (e?.code !== 'resource_missing') throw e;
     });
@@ -132,7 +134,7 @@ export async function deleteAccount(userId: string, confirm: unknown, opts: { re
     // Verrou sur tes morceaux : un achat qui commence en même temps attend, puis échoue proprement.
     await tx`select id from tracks where owner_id = ${userId} for update`;
     if (await openSales(tx, userId)) throw new Invalid(SALE_PENDING);
-    await moneyOwed(tx, userId, renounce);
+    const renounced = await moneyOwed(tx, renounceCents);
     // Fichiers à effacer, relevés dans la transaction (aucun envoi terminé entre-temps n'est oublié).
     const files = await tx<{ k: string | null }[]>`select original_key as k from track_versions where owner_id = ${userId}
       union all select preview_key from track_versions where owner_id = ${userId}
@@ -143,7 +145,7 @@ export async function deleteAccount(userId: string, confirm: unknown, opts: { re
     const [{ keep }] = await tx<{ keep: boolean }[]>`select (
       exists (select 1 from orders where seller_id = ${userId}) or exists (select 1 from order_shares where user_id = ${userId})
       or exists (select 1 from stripe_accounts where user_id = ${userId})) as keep`;
-    await tx`select app.erase_account(${keep}, ${renounce})`;
+    await tx`select app.erase_account(${keep}, ${renounced})`;
     return { outcome: keep ? 'anonymized' as const : 'deleted' as const, keys };
   });
 
@@ -171,15 +173,12 @@ export class MoneyOwed extends Invalid {
  * et tu choisis — activer tes reversements pour le toucher, ou y renoncer explicitement et supprimer quand même.
  * Ne comptent pas : parts bloquées par un litige, ventes dont le remboursement est demandé.
  */
-async function moneyOwed(tx: Tx, userId: string, renounce: boolean) {
-  const [{ cents }] = await tx<{ cents: number }[]>`select coalesce(sum(s.amount_cents), 0)::int as cents
-    from order_shares s join orders o on o.id = s.order_id
-    where s.user_id = ${userId} and s.status in ('scheduled', 'held', 'transferring') and o.refund_requested_at is null
-      and not exists (select 1 from stripe_accounts a where a.user_id = ${userId} and a.transfers_active)`;
-  if (cents > 0 && !renounce) {
-    const amount = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(cents / 100);
-    throw new MoneyOwed(cents, `Il te reste ${amount} de ventes à recevoir. Active tes reversements (Ventes → « Activer mes reversements ») pour les toucher, ou coche « Je renonce » pour supprimer quand même.`);
-  }
+async function moneyOwed(tx: Tx, renounceCents: number) {
+  const [{ cents }] = await tx<{ cents: number }[]>`select app.account_money_owed() as cents`;
+  if (cents === 0) return false;
+  if (cents <= renounceCents) return true;
+  const amount = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(cents / 100);
+  throw new MoneyOwed(cents, `Il te reste ${amount} de ventes à recevoir. Active tes reversements (Ventes → « Activer mes reversements ») pour les toucher, ou coche « Je renonce » pour supprimer quand même.`);
 }
 
 /** Efface les fichiers notés (ceux donnés, ou les plus anciens en attente) ; rend le nombre effacé. Lancé aussi par le worker. */
