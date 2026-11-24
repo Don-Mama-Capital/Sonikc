@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { fail, limitsFor } from './plans';
 import { withUser, type Tx } from './db';
 import { contactsFromCsv, splitTags } from './csv';
 import { Invalid, NotFound } from './library';
@@ -87,7 +88,8 @@ export async function createContact(userId: string, input: { email?: unknown; na
   const tags = splitTags((tagsSchema.parse(input.tags) ?? []).join(','));
   return withUser(userId, async (tx) => {
     const [{ n }] = await tx<{ n: number }[]>`select count(*)::int as n from contacts`;
-    if (n >= MAX_CONTACTS) throw new Invalid(`Limite atteinte : ${MAX_CONTACTS} contacts.`);
+    const { plan, limits } = await limitsFor(tx, userId);
+    if (n >= Math.min(MAX_CONTACTS, limits.contacts)) fail(plan, 'contacts', n + 1);
     const [c] = await tx<{ id: string }[]>`insert into contacts (owner_id, email, name, tags) values (${userId}, ${email}, ${name}, ${tags})
       on conflict (owner_id, email) do nothing returning id`;
     if (!c) throw new Invalid('Ce contact existe déjà.');
@@ -138,7 +140,8 @@ export async function importContacts(userId: string, csv: unknown, extraTags: un
         tags = coalesce((select (array_agg(distinct t order by t))[1:30] from unnest(contacts.tags || excluded.tags) t), '{}')
       returning (xmax = 0) as inserted` : [];
     const created = res.filter((r) => r.inserted).length;
-    if (n + created > MAX_CONTACTS) throw new Invalid(`Limite atteinte : ${MAX_CONTACTS} contacts.`);
+    const { plan, limits } = await limitsFor(tx, userId);
+    if (n + created > Math.min(MAX_CONTACTS, limits.contacts)) fail(plan, 'contacts', n + created);
     return { lines: contacts.length + invalid.length, created, merged: contacts.length - created, invalid: invalid.slice(0, 100), invalidCount: invalid.length };
   });
 }

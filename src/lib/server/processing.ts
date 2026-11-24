@@ -159,8 +159,18 @@ export async function processImport(importId: string) {
         folderCache.set(dir, f.id);
         return f.id;
       };
+      // Limites de l'offre : nombre de morceaux et stockage ; ce qui dépasse n'est pas importé (et c'est dit).
+      const { limitsFor, storageUsed, GB, limitMessage } = await import('./plans');
+      const { plan, limits } = await limitsFor(tx, im.ownerId);
+      const [{ have }] = await tx<{ have: number }[]>`select count(*)::int as have from tracks where owner_id = ${im.ownerId} and deleted_at is null`;
+      let room = limits.tracks === null ? Infinity : Math.max(0, limits.tracks - have);
+      let bytes = await storageUsed(tx, im.ownerId);
+      let overLimit = 0;
+      let limitKey: 'tracks' | 'storageGb' | null = null;
       for (const e of entries) {
         if (!e.size) { skipped++; continue; }
+        if (room <= 0 || bytes + e.size > limits.storageGb * GB) { overLimit++; limitKey ??= room <= 0 ? 'tracks' : 'storageGb'; continue; }
+        room--; bytes += e.size;
         const folderId = await folderFor(e.name.split('/').slice(0, -1).join('/'));
         const ext = e.name.split('.').pop()!.toLowerCase().replace('wave', 'wav');
         const [t] = await tx<{ id: string }[]>`insert into tracks (owner_id, folder_id, title) values (${im.ownerId}, ${folderId}, ${cleanTitle(e.name)}) returning id`;
@@ -173,7 +183,10 @@ export async function processImport(importId: string) {
         await tx`update tracks set current_version_id = ${v.id} where id = ${t.id}`;
         await enqueue(tx, 'process_version', { versionId: v.id });
       }
-      await tx`update imports set status = 'done', created_folder_id = ${root.id}, tracks_created = ${entries.length - skipped}, files_skipped = ${skipped} where id = ${importId}`;
+      await tx`update imports set status = 'done', created_folder_id = ${root.id}, tracks_created = ${entries.length - skipped - overLimit},
+        files_skipped = ${skipped + overLimit},
+        error = ${limitKey ? `${overLimit} fichier${overLimit > 1 ? 's' : ''} non importé${overLimit > 1 ? 's' : ''}. ${limitMessage(plan, limitKey)}` : null}
+        where id = ${importId}`;
     });
   } finally {
     await rm(tmp, { recursive: true, force: true });

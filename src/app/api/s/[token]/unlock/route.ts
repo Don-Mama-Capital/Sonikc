@@ -9,7 +9,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   if (!sameOrigin(req)) return fail(403, 'Origine refusée.');
   const { token } = await params;
   const body = await req.json().catch(() => ({}));
-  const r = await unlock(token, String(body.password ?? ''), (await visitorId())!, await clientIp());
+  const r = await unlock(token, String(body.password ?? ''), (await visitorId(true, body.pv))!, await clientIp());
   if (!r.ok) {
     if (r.error === 'not_found') return fail(404, 'Introuvable.');
     if (r.error === 'rate_limited') return fail(429, 'Trop d’essais. Réessaie dans 15 minutes.');

@@ -1,5 +1,6 @@
 'use client';
 
+import { PAGE_VISITOR } from '@/lib/client/visitor';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -11,7 +12,7 @@ export function PasswordForm({ token }: { token: string }) {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true); setError(null);
-    const res = await fetch(`/api/s/${token}/unlock`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }) });
+    const res = await fetch(`/api/s/${token}/unlock`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password, pv: PAGE_VISITOR }) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { setError(data.error ?? 'Une erreur est survenue.'); setBusy(false); return; }
     router.refresh();

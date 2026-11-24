@@ -2,6 +2,7 @@
 
 import { useEffect, type RefObject } from 'react';
 import type { QueueItem } from './PlayerProvider';
+import { PAGE_VISITOR } from '@/lib/client/visitor';
 
 const BEAT_MS = 5000;
 
@@ -23,7 +24,7 @@ export function useListenTracker(audio: RefObject<HTMLAudioElement | null>, curr
     let timer: ReturnType<typeof setInterval> | null = null;
 
     const send = (body: unknown, beacon = false) => {
-      const data = JSON.stringify(body);
+      const data = JSON.stringify({ ...(body as object), pv: PAGE_VISITOR });
       if (beacon && navigator.sendBeacon) { navigator.sendBeacon(url, new Blob([data], { type: 'text/plain' })); return Promise.resolve(null); }
       return fetch(url, { method: 'POST', body: data, keepalive: true, headers: { 'content-type': 'text/plain' } })
         .then((r) => (r.ok ? r.json() : null)).catch(() => null);

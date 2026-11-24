@@ -30,7 +30,7 @@ describe.skipIf(!key)('Stripe réel (mode test)', () => {
     });
     await updateShareSettings(u.id, 'track', trackId, { visibility: 'for_sale' });
     const [basic] = await listTemplates(u.id);
-    const c = await startCheckout({ trackId, templateId: basic.id, country: 'BE', email: 'smoke@example.com' }, { buyerUserId: null, ip: '203.0.113.7' });
+    const c = await startCheckout({ trackId, templateId: basic.id, country: 'BE', email: 'smoke@example.com', waiver: true }, { buyerUserId: null, ip: '203.0.113.7' });
     expect(c.url).toMatch(/^https:\/\/checkout\.stripe\.com\//);
     const [o] = await asService((tx) => tx<{ session: string }[]>`select checkout_session_id as session from orders where id = ${c.orderId}`);
     const s = await stripe().checkout.sessions.retrieve(o.session, { expand: ['payment_intent.latest_charge.balance_transaction'] });
@@ -67,10 +67,26 @@ describe.skipIf(!key)('Stripe réel (mode test)', () => {
     await stripe().accounts.del(a.id);
   });
 
+  it('Abonnements : prix TTC, TVA du pays, session d’abonnement avec essai, portail (mêmes fonctions que Sonikc)', async () => {
+    const { ensurePrice, startSubscription, portalUrl } = await import('@/lib/server/billing');
+    const { OFFERS } = await import('@/config/offers');
+    const price = await ensurePrice('pro', 'month');
+    expect(price).toMatchObject({ unit_amount: OFFERS.pro.priceMonthCents, currency: 'eur', tax_behavior: 'inclusive' });
+    expect((await ensurePrice('pro', 'month')).id).toBe(price.id); // retrouvé par sa clé, pas recréé
+    const u = await makeUser(undefined, 'free');
+    const { url } = await startSubscription(u.id, { plan: 'pro', period: 'month', country: 'FR' });
+    expect(url).toMatch(/^https:\/\/checkout\.stripe\.com\//);
+    const portal = await portalUrl(u.id);
+    expect(portal.url).toMatch(/^https:\/\/billing\.stripe\.com\//);
+  });
+
   it('Signature des webhooks : celle de Stripe est acceptée, une fausse refusée', () => {
     const payload = JSON.stringify({ id: 'evt_smoke', object: 'event', type: 'ping' });
     const header = Stripe.webhooks.generateTestHeaderString({ payload, secret: process.env.STRIPE_WEBHOOK_SECRET! });
     expect(verifyWebhook(payload, header).id).toBe('evt_smoke');
-    expect(() => verifyWebhook(payload, header.replace(/v1=./, 'v1=0'))).toThrow();
+    // Altère toujours la signature (remplacer par « 0 » ne change rien si elle commence déjà par 0 : 1 fois sur 16).
+    const forged = header.replace(/v1=(.)/, (_, c: string) => `v1=${c === '0' ? '1' : '0'}`);
+    expect(forged).not.toBe(header);
+    expect(() => verifyWebhook(payload, forged)).toThrow();
   });
 });

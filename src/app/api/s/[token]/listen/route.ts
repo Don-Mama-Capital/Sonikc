@@ -9,7 +9,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   if (r.status !== 'ok') return fail(404, 'Introuvable.');
   let b: Record<string, unknown> = {};
   try { b = JSON.parse(await req.text()); } catch { return fail(400, 'Données invalides.'); }
-  const v = (await visitorId())!;
+  const v = (await visitorId(true, b.pv))!;
   try {
     if (b.action === 'start') return json(await listenStart(r.ctx, String(b.trackId), v));
     if (b.action === 'beat') return json({ listenedMs: await listenBeat(r.ctx, String(b.sessionId), v, Number(b.playedMs)) });

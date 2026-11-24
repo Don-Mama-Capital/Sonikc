@@ -1,5 +1,6 @@
 'use client';
 
+import { PAGE_VISITOR } from '@/lib/client/visitor';
 import { useEffect, useState } from 'react';
 import { formatKey } from '@/lib/audio/keys';
 import { formatBpm, formatDuration } from '@/lib/format';
@@ -14,13 +15,13 @@ export function SharedView({ token, view }: { token: string; view: View }) {
   const [saved, setSaved] = useState(false);
   useEffect(() => {
     if (view.isOwner) return;
-    fetch(`/api/s/${token}/view`, { method: 'POST' }).then((r) => (r.ok ? r.json() : null))
+    fetch(`/api/s/${token}/view`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pv: PAGE_VISITOR }) }).then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (d) { setFav({ loggedIn: d.loggedIn, ids: d.favorites, loaded: true }); setSaved(Boolean(d.saved)); } }).catch(() => {});
   }, [token, view.isOwner]);
   const toggleFav = async (trackId: string) => {
     const on = !fav.ids.includes(trackId);
     setFav((f) => ({ ...f, ids: on ? [...f.ids, trackId] : f.ids.filter((x) => x !== trackId) }));
-    await fetch(`/api/s/${token}/favorite`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ trackId, on }) }).catch(() => {});
+    await fetch(`/api/s/${token}/favorite`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ trackId, on, pv: PAGE_VISITOR }) }).catch(() => {});
   };
   const visible = view.tracks.filter((t) => view.isOwner || !t.hiddenForListeners);
   const queue: QueueItem[] = visible.map((t) => ({
@@ -75,7 +76,7 @@ export function SharedView({ token, view }: { token: string; view: View }) {
                 </button>
               )}
               {t.allowDownload && (
-                <a className="shrink-0 text-sm text-mute underline hover:text-text" href={`/api/s/${token}/download/${t.versionId}`} aria-label={`Télécharger ${t.title}`}>
+                <a className="shrink-0 text-sm text-mute underline hover:text-text" href={`/api/s/${token}/download/${t.versionId}?pv=${PAGE_VISITOR}`} aria-label={`Télécharger ${t.title}`}>
                   Télécharger
                 </a>
               )}

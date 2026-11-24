@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { limitsFor } from './plans';
 import { withUser, withViewer, type ViewerCtx } from './db';
 import { NotFound } from './library';
 
@@ -49,25 +50,28 @@ export async function trackStats(userId: string, trackId: string) {
   return withUser(userId, async (tx) => {
     const [t] = await tx`select 1 from tracks where id = ${trackId}`;
     if (!t) throw new NotFound();
+    // Historique limité selon l'offre (les données restent en base : passer à une offre supérieure les rend visibles).
+    const { limits } = await limitsFor(tx, userId);
+    const since = limits.statsDays === null ? new Date(0) : new Date(Date.now() - limits.statsDays * 86_400_000);
     const [totals] = await tx<{ plays: number; listeners: number; totalMs: number; avgMs: number; complete: number; downloads: number; favorites: number }[]>`
       select count(*)::int as plays,
              count(distinct coalesce(listener_id::text, visitor))::int as listeners,
              coalesce(sum(listened_ms), 0)::int as "totalMs",
              coalesce(round(avg(listened_ms)), 0)::int as "avgMs",
              count(*) filter (where duration_ms > 0 and listened_ms >= duration_ms * ${COMPLETE}::numeric)::int as complete,
-             (select count(*)::int from interactions i where i.track_id = ${trackId} and i.kind = 'download') as downloads,
-             (select count(*)::int from interactions i where i.track_id = ${trackId} and i.kind = 'favorite') as favorites
-      from listen_sessions where track_id = ${trackId}`;
+             (select count(*)::int from interactions i where i.track_id = ${trackId} and i.kind = 'download' and i.created_at >= ${since}) as downloads,
+             (select count(*)::int from interactions i where i.track_id = ${trackId} and i.kind = 'favorite' and i.created_at >= ${since}) as favorites
+      from listen_sessions where track_id = ${trackId} and started_at >= ${since}`;
     const bySource = await tx<{ source: string; plays: number; listeners: number; totalMs: number }[]>`
       select source, count(*)::int as plays, count(distinct coalesce(listener_id::text, visitor))::int as listeners,
              coalesce(sum(listened_ms), 0)::int as "totalMs"
-      from listen_sessions where track_id = ${trackId} group by source order by plays desc, source`;
+      from listen_sessions where track_id = ${trackId} and started_at >= ${since} group by source order by plays desc, source`;
     const recent = await tx<{ id: string; who: string | null; source: string; startedAt: Date; listenedMs: number; durationMs: number | null }[]>`
       select s.id, coalesce(s.listener_name, ct.name, ct.email) as who, s.source, s.started_at as "startedAt",
              s.listened_ms as "listenedMs", s.duration_ms as "durationMs"
       from listen_sessions s left join contacts ct on ct.id = s.contact_id
-      where s.track_id = ${trackId} order by s.started_at desc limit 20`;
-    return { ...totals, bySource, recent: recent.map((r) => ({ ...r, startedAt: r.startedAt.toISOString() })) };
+      where s.track_id = ${trackId} and s.started_at >= ${since} order by s.started_at desc limit 20`;
+    return { ...totals, statsDays: limits.statsDays, bySource, recent: recent.map((r) => ({ ...r, startedAt: r.startedAt.toISOString() })) };
   });
 }
 
@@ -75,14 +79,16 @@ export async function trackStats(userId: string, trackId: string) {
 export async function linkFunnel(userId: string, kind: 'project' | 'track', id: string) {
   uuid.parse(id);
   return withUser(userId, async (tx) => {
+    const { limits } = await limitsFor(tx, userId);
+    const since = limits.statsDays === null ? new Date(0) : new Date(Date.now() - limits.statsDays * 86_400_000);
     const rows = await tx<{ linkId: string; label: string; revoked: boolean; opened: number; played: number; over30: number; complete: number; downloaded: number; saved: number }[]>`
       select l.id as "linkId", l.label, l.revoked_at is not null as revoked,
-        (select count(distinct v.visitor)::int from link_views v where v.link_id = l.id) as opened,
-        (select count(distinct s.visitor)::int from listen_sessions s where s.link_id = l.id) as played,
-        (select count(distinct s.visitor)::int from listen_sessions s where s.link_id = l.id and s.listened_ms >= 30000) as over30,
-        (select count(distinct s.visitor)::int from listen_sessions s where s.link_id = l.id and s.duration_ms > 0 and s.listened_ms >= s.duration_ms * ${COMPLETE}::numeric) as complete,
-        (select count(distinct i.visitor)::int from interactions i where i.link_id = l.id and i.kind = 'download') as downloaded,
-        (select count(*)::int from saves sv where sv.link_id = l.id) as saved
+        (select count(distinct v.visitor)::int from link_views v where v.link_id = l.id and v.created_at >= ${since}) as opened,
+        (select count(distinct s.visitor)::int from listen_sessions s where s.link_id = l.id and s.started_at >= ${since}) as played,
+        (select count(distinct s.visitor)::int from listen_sessions s where s.link_id = l.id and s.started_at >= ${since} and s.listened_ms >= 30000) as over30,
+        (select count(distinct s.visitor)::int from listen_sessions s where s.link_id = l.id and s.started_at >= ${since} and s.duration_ms > 0 and s.listened_ms >= s.duration_ms * ${COMPLETE}::numeric) as complete,
+        (select count(distinct i.visitor)::int from interactions i where i.link_id = l.id and i.created_at >= ${since} and i.kind = 'download') as downloaded,
+        (select count(*)::int from saves sv where sv.link_id = l.id and sv.created_at >= ${since}) as saved
       from share_links l
       where ${kind === 'project' ? tx`l.project_id = ${id}` : tx`l.track_id = ${id}`}
       order by l.created_at desc`;

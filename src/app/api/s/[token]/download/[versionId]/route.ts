@@ -11,6 +11,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ token: s
   const f = await sharedFile(r.ctx, r.meta, versionId, 'original');
   if (!f) return new Response('Téléchargement non autorisé.', { status: 403 });
   // Une requête partielle (reprise) ne compte pas un deuxième téléchargement.
-  if (!req.headers.get('range')) await interact(r.ctx, f.trackId, (await visitorId())!, 'download').catch(() => false);
+  if (!req.headers.get('range')) await interact(r.ctx, f.trackId, (await visitorId(true, new URL(req.url).searchParams.get('pv')))!, 'download').catch(() => false);
   return store().readResponse(f.key, req, f.filename);
 }

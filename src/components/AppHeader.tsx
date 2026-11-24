@@ -15,6 +15,7 @@ const LINKS = [
   { href: '/app/campaigns', label: 'Envois' },
   { href: '/app/boutique', label: 'Ma page' },
   { href: '/app/ventes', label: 'Ventes' },
+  { href: '/app/offre', label: 'Mon offre' },
   { href: '/recus', label: 'Reçus' },
   { href: '/achats', label: 'Achats' },
   { href: '/app/trash', label: 'Corbeille' },

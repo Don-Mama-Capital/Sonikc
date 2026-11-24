@@ -1,4 +1,5 @@
 import { listTemplates } from './storefront';
+import { fail, limitsFor } from './plans';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { withUser, type Tx } from './db';
@@ -73,6 +74,10 @@ export async function updateShareSettings(userId: string, kind: ShareKind, id: s
   const allowDownload = input.allowDownload === undefined ? undefined : z.boolean().parse(input.allowDownload);
   await withUser(userId, async (tx) => {
     await target(tx, kind, id);
+    if (password) {
+      const { plan, limits } = await limitsFor(tx, userId);
+      if (!limits.passwordLinks) fail(plan, 'passwordLinks');
+    }
     const t = tx(table(kind));
     if (visibility !== undefined) await tx`update ${t} set visibility = ${visibility} where id = ${id}`;
     // Changer le mot de passe annule tous les déverrouillages précédents (ils sont signés avec l'ancien).

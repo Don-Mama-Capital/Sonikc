@@ -70,7 +70,7 @@ async function seller(plan: 'free' | 'pro' | 'studio' = 'free') {
 
 const buyerEmail = () => `buyer_${randomUUID().slice(0, 8)}@client.fr`;
 async function buy(s: Awaited<ReturnType<typeof seller>>, templateId: string, o: { country?: string; email?: string; card?: string } = {}) {
-  const c = await startCheckout({ trackId: s.trackId, templateId, country: o.country ?? 'FR', email: o.email ?? buyerEmail() }, { buyerUserId: null, ip: `10.0.0.${Math.floor(Math.random() * 250)}` });
+  const c = await startCheckout({ trackId: s.trackId, templateId, country: o.country ?? 'FR', email: o.email ?? buyerEmail(), waiver: true }, { buyerUserId: null, ip: `10.0.0.${Math.floor(Math.random() * 250)}` });
   const sessionId = new URL(c.url).pathname.split('/').pop()!;
   return { ...c, sessionId };
 }
@@ -109,6 +109,8 @@ describe('Lot 4.3 — paiement (faux Stripe)', () => {
     const m = mails.find((x) => x.to === email && x.tag === 'order');
     const token = /\/commande\/([A-Za-z0-9_-]{44})/.exec(m.text)![1];
     expect(parseOrderToken(token)).toBe(c.orderId);
+    // Renonciation au droit de rétractation confirmée sur support durable (email ; la facture porte la même ligne).
+    expect(m.text).toContain('renoncé à ton droit de rétractation');
     expect(mails.some((x) => x.to === s.email && x.tag === 'sale')).toBe(true);
     // Côté producteur et acheteur (même adresse, compte créé ensuite).
     expect((await listSales(s.id))[0]).toMatchObject({ trackTitle: 'Lueur froide', licenceName: 'Premium', status: 'paid' });
@@ -121,7 +123,7 @@ describe('Lot 4.3 — paiement (faux Stripe)', () => {
 
   it('1b. on ne peut pas acheter ce qui n’est pas en vente', async () => {
     const s = await seller();
-    await expect(startCheckout({ trackId: s.trackId, templateId: s.basic.id, country: 'ZZ', email: buyerEmail() }, { buyerUserId: null, ip: '1.1.1.1' })).rejects.toThrow();
+    await expect(startCheckout({ trackId: s.trackId, templateId: s.basic.id, country: 'ZZ', email: buyerEmail(), waiver: true }, { buyerUserId: null, ip: '1.1.1.1' })).rejects.toThrow();
     await updateShareSettings(s.id, 'track', s.trackId, { visibility: 'public' });
     await expect(buy(s, s.basic.id)).rejects.toThrow('plus disponible');
     await updateShareSettings(s.id, 'track', s.trackId, { visibility: 'for_sale' });
@@ -466,14 +468,14 @@ describe('Lot 4.3 — relecture indépendante : reprises après panne et cas lim
 
   it('M5, M7, M8. limites, preuves du pays, email de l’acheteur caché aux collaborateurs', async () => {
     const s = await seller();
-    await expect(startCheckout({ trackId: s.trackId, templateId: s.basic.id, country: 'constructor', email: buyerEmail() }, { buyerUserId: null, ip: '9.9.9.9' }))
+    await expect(startCheckout({ trackId: s.trackId, templateId: s.basic.id, country: 'constructor', email: buyerEmail(), waiver: true }, { buyerUserId: null, ip: '9.9.9.9' }))
       .rejects.toThrow();
     // Exclusive : deux essais par jour et par personne au plus.
     for (let i = 0; i < 2; i++) {
-      const c = await startCheckout({ trackId: s.trackId, templateId: s.exclusive.id, country: 'FR', email: 'grief@x.fr' }, { buyerUserId: null, ip: '7.7.7.7' });
+      const c = await startCheckout({ trackId: s.trackId, templateId: s.exclusive.id, country: 'FR', email: 'grief@x.fr', waiver: true }, { buyerUserId: null, ip: '7.7.7.7' });
       await fake.expire(new URL(c.url).pathname.split('/').pop()!);
     }
-    await expect(startCheckout({ trackId: s.trackId, templateId: s.exclusive.id, country: 'FR', email: 'grief@x.fr' }, { buyerUserId: null, ip: '7.7.7.7' }))
+    await expect(startCheckout({ trackId: s.trackId, templateId: s.exclusive.id, country: 'FR', email: 'grief@x.fr', waiver: true }, { buyerUserId: null, ip: '7.7.7.7' }))
       .rejects.toThrow('deux fois');
     // Déclaré hors UE, carte française : signalé.
     const c = await buy(s, s.basic.id, { country: 'XX' });
@@ -683,4 +685,18 @@ describe('Stripe réel : frais connus avec retard', () => {
     expect(o.stripe_fee_cents).toBe(Math.round(o.gross_cents * 0.015) + 25);
     fake.clearFailures();
   }, 20_000);
+});
+
+describe('Lot 5.1 — commission figée sur la vente', () => {
+  it('un changement d’offre ne modifie pas la commission d’une vente déjà commencée ou payée', async () => {
+    const s = await seller('free');
+    const c = await buy(s, s.basic.id);
+    await asService((tx) => tx`update profiles set plan = 'pro' where user_id = ${s.id}`);
+    await pay(c.sessionId);
+    const o = await order(c.orderId);
+    expect(Number(o.commission_pct)).toBe(OFFERS.free.commissionPct);
+    expect(o.commission_cents).toBe(commissionCents(o.net_cents, OFFERS.free.commissionPct));
+    const c2 = await buy(s, s.basic.id);
+    expect(Number((await order(c2.orderId)).commission_pct)).toBe(OFFERS.pro.commissionPct);
+  });
 });

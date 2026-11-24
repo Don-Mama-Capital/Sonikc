@@ -36,6 +36,7 @@ test('achat de bout en bout (faux Stripe) : licence, paiement, fichiers, certifi
   await buyer.getByTestId('licence').filter({ hasText: 'Premium' }).getByTestId('buy').click();
   await buyer.getByLabel('Ton email (fichiers et facture)').fill('acheteur@client.fr');
   await buyer.getByLabel('Ton pays (pour la TVA)').selectOption('BE');
+  await buyer.getByTestId('waiver').check();
   await buyer.getByRole('button', { name: 'Payer' }).click();
   // Page de paiement (faux Stripe) : 59 € HT + TVA belge 21 % = 71,39 €.
   await expect(buyer.getByTestId('fake-total')).toHaveText('71.39 €');

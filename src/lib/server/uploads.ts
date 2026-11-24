@@ -3,6 +3,7 @@ import { withUser } from './db';
 import { NotFound, Invalid } from './library';
 import { cleanTitle } from '../audio/title';
 import { exists, size, store } from './storage';
+import { GB, fail, limitsFor, storageUsed } from './plans';
 
 export const AUDIO_EXTS = ['wav', 'wave', 'mp3', 'aif', 'aiff', 'flac'] as const;
 export const MAX_AUDIO_BYTES = 500 * 1024 ** 2;
@@ -37,6 +38,12 @@ export async function startUpload(userId: string, input: z.input<typeof startSch
   if (p.size > max) throw new Invalid(`Fichier trop lourd (max ${Math.round(max / 1024 ** 2)} Mo).`);
 
   return withUser(userId, async (tx) => {
+    const { plan, limits } = await limitsFor(tx, userId);
+    if ((await storageUsed(tx, userId)) + p.size > limits.storageGb * GB) fail(plan, 'storageGb');
+    if (!isZip && !p.trackId && limits.tracks !== null) {
+      const [{ n }] = await tx<{ n: number }[]>`select count(*)::int as n from tracks where deleted_at is null`;
+      if (n >= limits.tracks) fail(plan, 'tracks', n + 1);
+    }
     if (p.folderId) {
       const [f] = await tx`select 1 from folders where id = ${p.folderId} and deleted_at is null`;
       if (!f) throw new NotFound('Dossier introuvable.');
@@ -44,11 +51,11 @@ export async function startUpload(userId: string, input: z.input<typeof startSch
     if (isZip) {
       if (p.trackId) throw new Invalid('Une nouvelle version doit être un fichier audio, pas un ZIP.');
       const [row] = await tx<{ id: string }[]>`
-        insert into imports (owner_id, folder_id, original_filename, original_key)
-        values (${userId}, ${p.folderId ?? null}, ${p.filename}, 'pending') returning id`;
+        insert into imports (owner_id, folder_id, original_filename, original_key, declared_bytes)
+        values (${userId}, ${p.folderId ?? null}, ${p.filename}, 'pending', ${p.size}) returning id`;
       const key = `u/${userId}/imports/${row.id}/source.zip`;
       await tx`update imports set original_key = ${key} where id = ${row.id}`;
-      return await ticket('import', row.id, key, max);
+      return await ticket('import', row.id, key, p.size);
     }
 
     let trackId = p.trackId ?? null;
@@ -65,8 +72,8 @@ export async function startUpload(userId: string, input: z.input<typeof startSch
       trackId = t.id;
     }
     const [v] = await tx<{ id: string }[]>`
-      insert into track_versions (track_id, owner_id, version_no, label, original_filename, original_key)
-      values (${trackId}, ${userId}, ${versionNo}, ${`v${versionNo}`}, ${p.filename}, 'pending') returning id`;
+      insert into track_versions (track_id, owner_id, version_no, label, original_filename, original_key, declared_bytes)
+      values (${trackId}, ${userId}, ${versionNo}, ${`v${versionNo}`}, ${p.filename}, 'pending', ${p.size}) returning id`;
     const key = `u/${userId}/t/${trackId}/v/${v.id}/original.${ext === 'wave' ? 'wav' : ext}`;
     await tx`update track_versions set original_key = ${key} where id = ${v.id}`;
     if (versionNo === 1) await tx`update tracks set current_version_id = ${v.id} where id = ${trackId}`;
@@ -76,8 +83,16 @@ export async function startUpload(userId: string, input: z.input<typeof startSch
       await tx`insert into project_tracks (project_id, track_id, owner_id, position)
                values (${p.projectId}, ${trackId}, ${userId}, (select coalesce(max(position), -1) + 1 from project_tracks where project_id = ${p.projectId}))`;
     }
-    return { ...(await ticket('version', v.id, key, max)), trackId };
+    return { ...(await ticket('version', v.id, key, p.size)), trackId };
   });
+}
+
+/** Le fichier reçu ne peut pas dépasser la taille annoncée (elle seule a été comptée dans l'espace de l'offre). */
+async function sameSizeAsDeclared(key: string, real: number | null, declared: string | null) {
+  if (declared !== null && real !== null && real > Number(declared)) {
+    await store().remove([key]).catch(() => {});
+    throw new Invalid('Le fichier reçu est plus lourd que celui annoncé. Recommence l’envoi.');
+  }
 }
 
 async function ticket(kind: 'version' | 'import', id: string, key: string, max: number): Promise<UploadTicket> {
@@ -89,18 +104,23 @@ export async function completeUpload(userId: string, kind: 'version' | 'import',
   z.string().uuid().parse(id);
   return withUser(userId, async (tx) => {
     if (kind === 'version') {
-      const [v] = await tx<{ key: string; status: string }[]>`select original_key as key, status from track_versions where id = ${id} for update`;
+      const [v] = await tx<{ key: string; status: string; declared: string | null }[]>`select original_key as key, status, declared_bytes as declared
+        from track_versions where id = ${id} for update`;
       if (!v) throw new NotFound('Envoi introuvable.');
       if (v.status !== 'uploading') return { status: v.status };
       if (!(await exists(v.key))) throw new Invalid('Le fichier n’est pas arrivé. Réessaie l’envoi.');
-      await tx`update track_versions set status = 'processing', size_bytes = ${await size(v.key)} where id = ${id}`;
+      const real = await size(v.key);
+      await sameSizeAsDeclared(v.key, real, v.declared);
+      await tx`update track_versions set status = 'processing', size_bytes = ${real} where id = ${id}`;
       await tx`select app.enqueue_job('process_version', ${id})`;
       return { status: 'processing' };
     }
-    const [im] = await tx<{ key: string; status: string }[]>`select original_key as key, status from imports where id = ${id} for update`;
+    const [im] = await tx<{ key: string; status: string; declared: string | null }[]>`select original_key as key, status, declared_bytes as declared
+      from imports where id = ${id} for update`;
     if (!im) throw new NotFound('Envoi introuvable.');
     if (im.status !== 'uploading') return { status: im.status };
     if (!(await exists(im.key))) throw new Invalid('Le fichier n’est pas arrivé. Réessaie l’envoi.');
+    await sameSizeAsDeclared(im.key, await size(im.key), im.declared);
     await tx`update imports set status = 'processing' where id = ${id}`;
     await tx`select app.enqueue_job('unzip_import', ${id})`;
     return { status: 'processing' };
