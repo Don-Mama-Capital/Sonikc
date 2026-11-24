@@ -3,6 +3,8 @@ import { asAccount, asPayments, withUser, type Tx } from './db';
 import { Invalid, NotFound } from './library';
 import { store } from './storage';
 import { stripe } from './stripe';
+import { syncCustomer } from './billing';
+import { refreshAccount } from './commerce';
 
 /**
  * Lot 5.3 — droits sur les données : export complet en JSON et suppression du compte.
@@ -97,8 +99,9 @@ export async function exportAccount(userId: string) {
  * Dans ce cas, la ligne du compte reste sans email, sans connexion Google ni profil reconnaissables, et ton
  * identifiant n'est jamais réattribué (il figure sur les licences déjà émises).
  * Refusée tant qu'une vente est en cours de paiement ou pas encore livrée (l'acheteur doit recevoir ses fichiers).
+ * Si de l'argent de ventes t'est dû sans compte de reversement : refusée, sauf si tu y renonces explicitement.
  */
-export async function deleteAccount(userId: string, confirm: unknown) {
+export async function deleteAccount(userId: string, confirm: unknown, opts: { renounce?: boolean } = {}) {
   const [p] = await withUser(userId, (tx) => tx<{ handle: string }[]>`select handle from profiles where user_id = ${userId}`);
   const [u] = await asAccount(userId, (tx) => tx<{ email: string; deletedAt: Date | null }[]>`select email, deleted_at as "deletedAt" from users where id = ${userId}`);
   if (!u || u.deletedAt) throw new NotFound();
@@ -106,71 +109,50 @@ export async function deleteAccount(userId: string, confirm: unknown) {
   if (z.string().trim().toLowerCase().safeParse(confirm).data !== expected.toLowerCase()) {
     throw new Invalid(`Pour confirmer, tape exactement : ${expected}`);
   }
-  const salePending = 'Une de tes ventes est en cours (paiement ou livraison des fichiers) : réessaie dans une heure.';
+  const renounce = opts.renounce === true;
+  // Compte de reversement : état relu chez Stripe (la valeur gardée peut dater), pour ne pas te dire « active » à tort.
+  await refreshAccount(userId).catch(() => null);
   await asAccount(userId, async (tx) => {
-    if (await openSales(tx, userId)) throw new Invalid(salePending);
-    await noMoneyOwed(tx, userId);
+    if (await openSales(tx, userId)) throw new Invalid(SALE_PENDING);
+    await moneyOwed(tx, userId, renounce);
   });
 
-  // 1. Abonnement : le client Stripe est supprimé (abonnement arrêté tout de suite, plus de données chez Stripe).
-  const [sub] = await asPayments((tx) => tx<{ customerId: string }[]>`select customer_id as "customerId" from subscriptions where user_id = ${userId}`);
+  // 1. Abonnement. D'abord l'état relu chez Stripe (l'essai éventuel est noté : il reste unique par personne),
+  //    puis le client Stripe est supprimé (abonnement arrêté tout de suite, plus de données chez Stripe).
+  const [sub] = await asAccount(userId, (tx) => tx<{ customerId: string }[]>`select customer_id as "customerId" from subscriptions where user_id = ${userId}`);
   if (sub) {
+    await syncCustomer(sub.customerId);
     await stripe().customers.del(sub.customerId, {}, { idempotencyKey: `delete-account-${userId}` }).catch((e: { code?: string }) => {
       if (e?.code !== 'resource_missing') throw e;
     });
   }
 
-  // 2. Base, en une transaction. Les sessions partent en premier : plus aucune requête du compte ne peut aboutir.
+  // 2. Base, en une transaction ; les écritures passent par une fonction de la base limitée au compte courant.
   const outcome = await asAccount(userId, async (tx) => {
-    await tx`delete from sessions where user_id = ${userId}`;
     // Verrou sur tes morceaux : un achat qui commence en même temps attend, puis échoue proprement.
     await tx`select id from tracks where owner_id = ${userId} for update`;
-    if (await openSales(tx, userId)) throw new Invalid(salePending);
-    await noMoneyOwed(tx, userId);
+    if (await openSales(tx, userId)) throw new Invalid(SALE_PENDING);
+    await moneyOwed(tx, userId, renounce);
     // Fichiers à effacer, relevés dans la transaction (aucun envoi terminé entre-temps n'est oublié).
     const files = await tx<{ k: string | null }[]>`select original_key as k from track_versions where owner_id = ${userId}
       union all select preview_key from track_versions where owner_id = ${userId}
       union all select original_key from imports where owner_id = ${userId}`;
     const keys = [...new Set(files.map((x) => x.k).filter((k): k is string => Boolean(k && k !== 'pending')))];
-    if (keys.length) await tx`insert into pending_file_removals ${tx(keys.map((key) => ({ key })))} on conflict (key) do nothing`;
-
-    // Parts sur les morceaux des autres : retirées (sans effet sur les ventes passées, figées).
-    await tx`delete from track_splits where collaborator_id = ${userId}`;
-    // Chez les autres (écoutes, ouvertures, notifications, achats) : ton nom et ton lien au compte disparaissent ;
-    // les lignes restent, anonymes. Fonction de la base limitée au compte courant.
-    await tx`select app.detach_account()`;
+    if (keys.length) await tx`insert into pending_file_removals ${tx(keys.map((key) => ({ key })))}`; // clés propres à ce compte : jamais en double
+    // Ventes, parts ou compte de reversement à garder pour la loi : compte anonymisé ; sinon effacé entièrement.
     const [{ keep }] = await tx<{ keep: boolean }[]>`select (
       exists (select 1 from orders where seller_id = ${userId}) or exists (select 1 from order_shares where user_id = ${userId})
       or exists (select 1 from stripe_accounts where user_id = ${userId})) as keep`;
-    await tx`delete from login_codes where lower(email) = lower(${u.email})`;
-    if (p?.handle) await tx`insert into retired_handles (handle) values (${p.handle.toLowerCase()}) on conflict do nothing`;
-    if (!keep) {
-      // Rien à garder pour la loi : tout part avec le compte (suppressions en cascade).
-      await tx`delete from users where id = ${userId}`;
-      return { outcome: 'deleted' as const, keys };
-    }
-    // Ventes à garder : on efface tout le reste, puis on rend le compte anonyme.
-    const owned = await tx<{ table: string }[]>`select table_name as table from information_schema.columns
-      where table_schema = 'public' and column_name = 'owner_id'
-      and table_name in (select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE')
-      and table_name not in ('orders', 'order_shares', 'stripe_accounts')`;
-    for (const t of owned) await tx`delete from ${tx(t.table)} where owner_id = ${userId}`;
-    await tx`delete from saves where user_id = ${userId}`;
-    await tx`delete from subscriptions where user_id = ${userId}`;
-    const short = userId.replace(/-/g, '').slice(0, 10);
-    await tx`update profiles set handle = ${`supprime_${short}`}, display_name = 'Compte supprimé', bio = '', links = '{}'::jsonb
-      where user_id = ${userId}`;
-    await tx`update users set email = ${`supprime+${userId}@sonikc.invalid`}, google_sub = null, deleted_at = now() where id = ${userId}`;
-    return { outcome: 'anonymized' as const, keys };
+    await tx`select app.erase_account(${keep}, ${renounce})`;
+    return { outcome: keep ? 'anonymized' as const : 'deleted' as const, keys };
   });
-
-  // L'offre du compte gardé repasse à « gratuite » (seul l'accès paiements écrit l'offre).
-  if (outcome.outcome === 'anonymized') await asPayments((tx) => tx`update profiles set plan = 'free' where user_id = ${userId}`);
 
   // 3. Fichiers (après la base). Ce qui échoue reste noté et sera repris par le worker.
   await removePendingFiles(outcome.keys);
   return { outcome: outcome.outcome, filesRemoved: outcome.keys.length };
 }
+
+const SALE_PENDING = 'Une de tes ventes est en cours (paiement ou livraison des fichiers) : réessaie dans une heure.';
 
 /** Une vente du compte (comme vendeur) est-elle en cours de paiement, ou payée mais pas encore livrée ? */
 async function openSales(tx: Tx, userId: string) {
@@ -179,14 +161,24 @@ async function openSales(tx: Tx, userId: string) {
   return n > 0;
 }
 
-/** De l'argent de ventes t'est dû mais ne peut pas t'être versé (pas de compte de reversement actif) : on te le dit d'abord. */
-async function noMoneyOwed(tx: Tx, userId: string) {
-  const [{ cents }] = await tx<{ cents: number }[]>`select coalesce(sum(s.amount_cents), 0)::int as cents from order_shares s
-    where s.user_id = ${userId} and s.status in ('scheduled', 'held', 'disputed', 'transferring')
+/** Erreur « de l'argent t'est dû » : le montant, et le choix entre activer ses reversements ou y renoncer. */
+export class MoneyOwed extends Invalid {
+  constructor(readonly cents: number, message: string) { super(message); }
+}
+
+/**
+ * De l'argent de ventes t'est dû mais ne peut pas t'être versé (pas de compte de reversement actif) : on te le dit
+ * et tu choisis — activer tes reversements pour le toucher, ou y renoncer explicitement et supprimer quand même.
+ * Ne comptent pas : parts bloquées par un litige, ventes dont le remboursement est demandé.
+ */
+async function moneyOwed(tx: Tx, userId: string, renounce: boolean) {
+  const [{ cents }] = await tx<{ cents: number }[]>`select coalesce(sum(s.amount_cents), 0)::int as cents
+    from order_shares s join orders o on o.id = s.order_id
+    where s.user_id = ${userId} and s.status in ('scheduled', 'held', 'transferring') and o.refund_requested_at is null
       and not exists (select 1 from stripe_accounts a where a.user_id = ${userId} and a.transfers_active)`;
-  if (cents > 0) {
+  if (cents > 0 && !renounce) {
     const amount = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(cents / 100);
-    throw new Invalid(`Il te reste ${amount} de ventes à recevoir. Active tes reversements (Ventes → « Activer mes reversements ») pour les toucher, puis supprime ton compte.`);
+    throw new MoneyOwed(cents, `Il te reste ${amount} de ventes à recevoir. Active tes reversements (Ventes → « Activer mes reversements ») pour les toucher, ou coche « Je renonce » pour supprimer quand même.`);
   }
 }
 

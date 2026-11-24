@@ -39,6 +39,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       // Fichiers des comptes supprimés dont l'effacement a échoué : nouvel essai.
       const { removePendingFiles } = await import('../src/lib/server/account');
       await removePendingFiles().then((n) => n && console.log('fichiers de comptes supprimés', n), (e) => console.error('effacement en échec', e));
+      const { purgeTrialMarks } = await import('../src/lib/server/billing');
+      await purgeTrialMarks().catch((e) => console.error('purge des empreintes d’essai en échec', e));
     }
     // Paiements : reprise de tout ce qui a échoué (remboursements, virements, reprises, livraisons).
     if (Date.now() - lastSweep > 10 * 60_000) {

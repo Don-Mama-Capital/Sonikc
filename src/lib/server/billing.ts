@@ -161,8 +161,10 @@ function planOfSubscription(s: Stripe.Subscription): { plan: PaidOffer | null; p
 }
 
 /**
- * Essai gratuit une fois par personne : empreintes HMAC (irréversibles) de l'email normalisé et de l'identifiant Google.
- * Gmail : sans points ni « +étiquette » ; autres adresses : sans « +étiquette ».
+ * Essai gratuit une fois par personne : empreintes HMAC (données pseudonymisées) de l'email normalisé et de
+ * l'identifiant Google. Gmail : sans points ni « +étiquette » ; autres adresses : sans « +étiquette ». Ne couvre pas
+ * les alias d'autres fournisseurs ni une nouvelle adresse : c'est voulu (proportionné).
+ * La clé dérive d'APP_SECRET : changer ce secret rend les empreintes inutilisables (les essais redeviennent possibles).
  */
 export function normalizeEmail(email: string) {
   const [rawLocal, rawDomain = ''] = email.trim().toLowerCase().split('@');
@@ -176,6 +178,11 @@ function trialMarks(email: string, googleSub: string | null) {
   const mark = (v: string) => createHmac('sha256', env().APP_SECRET).update(`sonikc-trial:${v}`).digest('hex');
   return [mark(`email:${normalizeEmail(email)}`), ...(googleSub ? [mark(`google:${googleSub}`)] : [])];
 }
+/** Empreintes d'essai gardées 3 ans au plus (intérêt légitime : éviter les essais répétés). Lancé par le worker. */
+export async function purgeTrialMarks() {
+  return (await asPayments((tx) => tx`delete from trial_marks where created_at < now() - interval '3 years'`)).count;
+}
+
 async function marksOf(tx: Tx, userId: string) {
   const [u] = await tx<{ email: string; googleSub: string | null }[]>`select email, google_sub as "googleSub" from users where id = ${userId}`;
   return u ? trialMarks(u.email, u.googleSub) : [];

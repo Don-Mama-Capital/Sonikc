@@ -6,6 +6,8 @@ import { ConsentReopen } from '@/components/legal/ConsentBanner';
 /** « Mes données » : export, cookies, suppression du compte. */
 export function AccountView({ confirmWord }: { confirmWord: string }) {
   const [confirm, setConfirm] = useState('');
+  const [owed, setOwed] = useState<number | null>(null);
+  const [renounce, setRenounce] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   return (
@@ -34,13 +36,21 @@ export function AccountView({ confirmWord }: { confirmWord: string }) {
         <p className="text-sm">C’est définitif. Pense à télécharger tes données avant.</p>
         <form className="flex flex-wrap items-end gap-2" onSubmit={async (e) => {
           e.preventDefault(); setBusy(true); setError(null);
-          const res = await fetch('/api/account/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm }) });
+          const res = await fetch('/api/account/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm, renounce }) });
           if (res.ok) { window.location.href = '/?compte=supprime'; return; }
-          setBusy(false); setError((await res.json().catch(() => ({}))).error ?? 'La suppression a échoué.');
+          const b = await res.json().catch(() => ({}));
+          setBusy(false); setError(b.error ?? 'La suppression a échoué.');
+          if (typeof b.owedCents === 'number') setOwed(b.owedCents);
         }}>
           <label className="block text-sm"><span className="text-mute">Tape <strong className="text-text">{confirmWord}</strong> pour confirmer</span>
             <input className="input mt-1" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" data-testid="delete-confirm" /></label>
-          <button className="btn-ghost text-bad" type="submit" disabled={busy || confirm.trim().toLowerCase() !== confirmWord.toLowerCase()} data-testid="delete-go">
+          {owed !== null && (
+            <label className="flex w-full items-start gap-2 text-sm">
+              <input type="checkbox" checked={renounce} onChange={(e) => setRenounce(e.target.checked)} data-testid="delete-renounce" />
+              <span>Je renonce à {new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(owed / 100)} de ventes et je supprime mon compte quand même.</span>
+            </label>
+          )}
+          <button className="btn-ghost text-bad" type="submit" disabled={busy || confirm.trim().toLowerCase() !== confirmWord.toLowerCase() || (owed !== null && !renounce)} data-testid="delete-go">
             {busy ? 'Suppression…' : 'Supprimer définitivement'}
           </button>
         </form>

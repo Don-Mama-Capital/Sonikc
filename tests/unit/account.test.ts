@@ -32,7 +32,11 @@ async function richUser() {
     await tx`insert into contacts (owner_id, email, name) values (${u.id}, 'artiste@x.fr', 'Lyna')`;
     await tx`insert into share_links (owner_id, track_id, label) values (${u.id}, ${t.id}, 'Insta')`;
     const [ot] = await tx<{ id: string }[]>`insert into tracks (owner_id, title) values (${other.id}, 'Son beat') returning id`;
-    await tx`insert into listen_sessions (owner_id, track_id, listener_id, listener_name, visitor, source) values (${other.id}, ${ot.id}, ${u.id}, 'Mon nom', 'v', 'direct')`;
+    const [ls] = await tx<{ id: string }[]>`insert into listen_sessions (owner_id, track_id, listener_id, listener_name, visitor, source)
+      values (${other.id}, ${ot.id}, ${u.id}, 'Mon nom', 'v', 'direct') returning id`;
+    // Notification d'écoute groupée chez l'autre producteur : nom affiché, séance et clé d'auditeur (sans actor_id).
+    await tx`insert into notifications (owner_id, kind, track_id, session_id, actor, listener_keys) values (${other.id}, 'listen', ${ot.id}, ${ls.id}, 'Mon nom', ${[u.id, 'visiteur']})`;
+    await tx`insert into notifications (owner_id, kind, track_id, actor, listener_keys) values (${other.id}, 'listen', ${ot.id}, 'Mon nom', ${[u.id]})`;
     await tx`insert into sessions (user_id, token_hash, expires_at) values (${u.id}, ${`h${u.id}`}, now() + interval '1 day')`;
     return { trackId: t.id, key, otherTrack: ot.id };
   });
@@ -77,6 +81,9 @@ describe('Lot 5.3 — export et suppression du compte', () => {
     const [l] = await asService((tx) => tx<{ listenerId: string | null; name: string | null }[]>`
       select listener_id as "listenerId", listener_name as name from listen_sessions where track_id = ${r.otherTrack}`);
     expect(l).toEqual({ listenerId: null, name: null }); // l'écoute reste, anonyme
+    const notes = await asService((tx) => tx<{ actor: string | null; keys: string[] }[]>`select actor, listener_keys as keys from notifications where owner_id = ${r.other.id}`);
+    expect(notes).toHaveLength(2);
+    for (const n of notes) { expect(n.actor).toBeNull(); expect(n.keys).not.toContain(r.u.id); }
   });
 
   it('5. suppression avec ventes : ventes, factures et parts gardées ; compte anonyme ; abonnement arrêté', async () => {
@@ -144,6 +151,25 @@ describe('Lot 5.3 — export et suppression du compte', () => {
     });
     await expect(deleteAccount(r.u.id, r.u.handle)).rejects.toThrow('Il te reste 5,12');
     expect(await exists(r.key)).toBe(true);
+    // Renoncer explicitement : la suppression passe (compte anonymisé, la part reste notée, la renonciation datée).
+    expect((await deleteAccount(r.u.id, r.u.handle, { renounce: true })).outcome).toBe('anonymized');
+    const [u] = await asService((tx) => tx<{ at: Date | null }[]>`select shares_renounced_at as at from users where id = ${r.u.id}`);
+    expect(u.at).not.toBeNull();
+    expect(await exists(r.key)).toBe(false);
+  });
+
+  it('5. une part bloquée par un litige ou une vente en cours de remboursement ne bloque pas la suppression', async () => {
+    const r = await richUser();
+    const seller = await makeUser();
+    await asService(async (tx) => {
+      const mk = async (refund: boolean) => (await tx<{ id: string }[]>`insert into orders (seller_id, track_title, seller_name, licence, exclusive, buyer_email,
+        country, net_cents, vat_rate, vat_cents, gross_cents, plan, commission_pct, commission_cents, status, paid_at, invoice_no, delivered_at, refund_requested_at)
+        values (${seller.id}, 'Beat', 'Prod', '{}'::jsonb, false, 'c@x.fr', 'FR', 2900, 20, 580, 3480, 'free', 10, 290, 'paid', now(),
+          ${`FT-r${Date.now()}${refund}`}, now(), ${refund ? new Date() : null}) returning id`)[0].id;
+      await tx`insert into order_shares (order_id, user_id, is_owner, pct, amount_cents, status) values (${await mk(false)}, ${r.u.id}, false, 20, 300, 'disputed')`;
+      await tx`insert into order_shares (order_id, user_id, is_owner, pct, amount_cents, status) values (${await mk(true)}, ${r.u.id}, false, 20, 300, 'held')`;
+    });
+    expect((await deleteAccount(r.u.id, r.u.handle)).outcome).toBe('anonymized');
   });
 
   it('accès « compte » : il ne voit que les lignes du compte concerné', async () => {
@@ -152,11 +178,23 @@ describe('Lot 5.3 — export et suppression du compte', () => {
     expect(await asAccount(a.u.id, (tx) => tx`select id from tracks where owner_id = ${b.u.id}`)).toEqual([]);
     expect(await asAccount(a.u.id, (tx) => tx`select id from users where id = ${b.u.id}`)).toEqual([]);
     expect(await asAccount(a.u.id, (tx) => tx`select 1 from sessions where user_id = ${b.u.id}`)).toEqual([]);
-    expect((await asAccount(a.u.id, (tx) => tx`delete from contacts where owner_id = ${b.u.id}`)).count).toBe(0);
     expect(await asAccount(a.u.id, (tx) => tx`select id from tracks where owner_id = ${a.u.id}`)).toHaveLength(1);
-    await expect(asAccount(a.u.id, (tx) => tx`update orders set net_cents = 1`)).rejects.toThrow(/permission denied/);
-    await expect(asAccount(a.u.id, (tx) => tx`delete from orders`)).rejects.toThrow(/permission denied/);
-    await expect(asAccount(a.u.id, (tx) => tx`update profiles set plan = 'studio'`)).rejects.toThrow(/permission denied/);
+    // Lecture seule : aucune écriture directe, même sur ses propres lignes ou celles où il apparaît chez d'autres.
+    for (const q of ['delete from contacts', 'update listen_sessions set listened_ms = 0', 'delete from notifications', 'update orders set buyer_user_id = null',
+      'update orders set net_cents = 1', 'delete from orders', "update profiles set plan = 'studio'", "update users set email = 'x@y.z'",
+      "insert into retired_handles (handle) values ('quelquun')", 'select app.detach_account()']) {
+      await expect(asAccount(a.u.id, (tx) => tx.unsafe(q)), q).rejects.toThrow(/permission denied/);
+    }
+    // File des fichiers : seulement ses propres fichiers.
+    await expect(asAccount(a.u.id, (tx) => tx`insert into pending_file_removals (key) values (${`u/${b.u.id}/t/x/original.wav`})`))
+      .rejects.toThrow(/row-level security/);
+    await expect(asAccount(a.u.id, (tx) => tx`insert into pending_file_removals (key) values (${`u/${a.u.id}/t/x/original.wav`})`)).resolves.toBeTruthy();
+    // Toute table reliée à un compte est couverte par une règle de lecture du compte (une table oubliée se verrait ici).
+    const missing = await asService((tx) => tx<{ t: string }[]>`select distinct c.table_name as t from information_schema.columns c
+      join information_schema.tables tb on tb.table_schema = c.table_schema and tb.table_name = c.table_name and tb.table_type = 'BASE TABLE'
+      where c.table_schema = 'public' and c.column_name in ('owner_id', 'user_id', 'listener_id', 'actor_id', 'collaborator_id')
+        and not exists (select 1 from pg_policies p where p.tablename = c.table_name and 'sonikc_account' = any(p.roles) and p.cmd in ('SELECT', 'ALL'))`);
+    expect(missing).toEqual([]);
     // Sans compte : rien d'autre que la file des fichiers à effacer.
     expect(await asAccount(null, (tx) => tx`select id from tracks`)).toEqual([]);
     // Plus aucun accès complet dans le code des comptes.

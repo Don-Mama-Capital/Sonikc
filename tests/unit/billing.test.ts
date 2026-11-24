@@ -155,6 +155,16 @@ describe('Lot 5.2 — abonnements (faux Stripe)', () => {
     expect(trialOf(sessionOf((await startSubscription(c.id, { plan: 'pro', period: 'month', country: 'FR' })).url))).toBeUndefined();
     const d = await makeUser(undefined, 'free');
     expect(trialOf(sessionOf((await startSubscription(d.id, { plan: 'pro', period: 'month', country: 'FR' })).url))).toBe(String(OFFERS.pro.trialDays));
+    // Webhook jamais traité avant la suppression du compte : l'essai est relu chez Stripe et noté quand même.
+    const e = await makeUser(undefined, 'free');
+    await asService((tx) => tx`update users set email = ${`late${tag}@orange.fr`} where id = ${e.id}`);
+    const late = await startSubscription(e.id, { plan: 'pro', period: 'month', country: 'FR' });
+    await fake.pay(sessionOf(late.url), { webhook: false });
+    const { deleteAccount } = await import('@/lib/server/account');
+    await deleteAccount(e.id, e.handle);
+    const f = await makeUser(undefined, 'free');
+    await asService((tx) => tx`update users set email = ${`late${tag}+bis@orange.fr`} where id = ${f.id}`);
+    expect(trialOf(sessionOf((await startSubscription(f.id, { plan: 'pro', period: 'month', country: 'FR' })).url))).toBeUndefined();
     // Seules des empreintes sont gardées, jamais l'adresse.
     expect(JSON.stringify(await asService((tx) => tx`select * from trial_marks`))).not.toContain('dupont');
   });

@@ -75,6 +75,21 @@ describe('Lot 5.1 — chaque limite du fichier des offres est appliquée côté 
     expect(await exists(v.key)).toBe(false);
   });
 
+  it('stockage des offres payantes : Pro et Studio plafonnés à leur valeur de la config', async () => {
+    for (const plan of ['pro', 'studio'] as const) {
+      const u = await makeUser(undefined, plan);
+      const t = await track(u.id);
+      const quota = limits(plan).storageGb * 1e9;
+      await asService((tx) => tx`insert into track_versions (track_id, owner_id, version_no, label, original_filename, original_key, size_bytes)
+        values (${t}, ${u.id}, 1, 'v1', 'a.wav', 'k', ${quota - 1000})`);
+      const e = await startUpload(u.id, { filename: 'b.wav', size: 2000, trackId: t }).then(() => null, (x) => x);
+      expect(e).toBeInstanceOf(LimitReached);
+      expect((e as LimitReached).limit).toBe('storageGb');
+      expect((e as Error).message).toContain(`Limite de ton offre ${OFFERS[plan].name}`);
+    }
+    expect([limits('pro').storageGb, limits('studio').storageGb]).toEqual([100, 500]);
+  });
+
   it('morceaux : restaurer depuis la corbeille compte aussi dans la limite', async () => {
     const u = await makeUser(undefined, 'free');
     const max = limits('free').tracks!;
