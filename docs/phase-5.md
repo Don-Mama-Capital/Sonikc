@@ -49,3 +49,18 @@ Relecture indépendante (paiement).
 | 5 | Suppression de compte : données et fichiers effacés ; ventes et factures gardées pour la loi, sans données personnelles inutiles | test |
 
 Relecture indépendante (droits d'accès).
+
+## Ajustements du 24/11 — chaque choix optimisé pour le modèle économique (demande du propriétaire)
+
+Critères écrits avant le code. Toujours dans le périmètre des lots 5.1 à 5.3 (aucune nouvelle fonction du registre).
+
+| # | Critère bloquant | Preuve |
+| --- | --- | --- |
+| A1 | Stockage plafonné pour rester rentable même à pleine utilisation : Pro 100 Go, Studio 500 Go (coût de stockage à plein < 30 % du prix HT pour Pro, < 65 % pour Studio ; usage réel bien plus bas) ; prix et commission inchangés | config + tests des limites |
+| A2 | Bandeau : le texte dit ce que change l'accord pour l'auditeur et pour le producteur ; boutons toujours au même niveau | capture, test existant |
+| A3 | Essai gratuit une seule fois **par personne** : empreinte (HMAC) de l'email normalisé et de l'identifiant Google gardée après suppression du compte, rien d'autre | test (recréer un compte avec la même adresse, variantes Gmail comprises) |
+| A4 | Suppression refusée tant que des parts de ventes te sont dues et ne peuvent pas t'être versées (aucun compte de reversement) ; le message donne le montant et la marche à suivre | test |
+| A5 | Export et suppression de compte passent par un accès dédié `sonikc_account` qui ne voit que les lignes du compte concerné : plus aucun `asService` dans le code des comptes | test des droits + tests existants |
+| A6 | La renonciation au droit de rétractation est confirmée sur support durable : email de livraison et facture | test |
+
+Relecture indépendante (droits d'accès, paiement).

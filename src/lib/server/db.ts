@@ -32,7 +32,7 @@ export async function withUser<T>(userId: string, fn: (tx: Tx) => Promise<T>): P
   }) as Promise<T>;
 }
 
-/** Accès « service » sans RLS : réservé à l'authentification et au worker (les paiements ont leur propre accès, asPayments). */
+/** Accès « service » sans RLS : réservé à l'authentification et au worker (paiements : asPayments ; comptes : asAccount). */
 export async function asService<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   return sql().begin(fn) as Promise<T>;
 }
@@ -59,6 +59,20 @@ export async function asPayments<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   return sql().begin(async (tx) => {
     await tx`select set_config('app.user_id', '', true)`;
     await tx`set local role sonikc_payments`;
+    return fn(tx);
+  }) as Promise<T>;
+}
+
+/**
+ * Accès « compte » : rôle `sonikc_account`, pour l'export et la suppression d'un compte. La base ne lui montre que
+ * les lignes de ce compte (les siennes, et celles où il apparaît chez d'autres : écoutes, collaborations, achats).
+ * Sans compte (null) : seulement la file des fichiers à effacer.
+ */
+export async function asAccount<T>(userId: string | null, fn: (tx: Tx) => Promise<T>): Promise<T> {
+  if (userId !== null && !/^[0-9a-f-]{36}$/i.test(userId)) throw new Error('invalid user id');
+  return sql().begin(async (tx) => {
+    await tx`select set_config('app.user_id', ${userId ?? ''}, true)`;
+    await tx`set local role sonikc_account`;
     return fn(tx);
   }) as Promise<T>;
 }

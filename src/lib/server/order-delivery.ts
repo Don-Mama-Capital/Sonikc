@@ -24,7 +24,7 @@ type Order = {
   id: string; status: string; trackTitle: string; sellerName: string; sellerId: string; licence: LicenceTerms & { name: string; description: string };
   buyerEmail: string; country: string; netCents: number; vatRate: number; vatCents: number; grossCents: number;
   invoiceNo: string; creditNoteNo: string | null; paidAt: Date; refundedAt: Date | null; deliveredAt: Date | null; buyerNotifiedAt: Date | null;
-  refundRequested: Date | null;
+  refundRequested: Date | null; waivedAt: Date | null;
   originalKey: string | null; format: string | null; sourceSha: string | null; sellerHandle: string;
 };
 
@@ -34,12 +34,17 @@ async function loadOrder(orderId: string) {
            o.buyer_email as "buyerEmail", o.country, o.net_cents as "netCents", o.vat_rate::float as "vatRate", o.vat_cents as "vatCents",
            o.gross_cents as "grossCents", o.invoice_no as "invoiceNo", o.credit_note_no as "creditNoteNo", o.paid_at as "paidAt",
            o.refunded_at as "refundedAt", o.delivered_at as "deliveredAt", o.buyer_notified_at as "buyerNotifiedAt",
-           o.refund_requested_at as "refundRequested",
+           o.refund_requested_at as "refundRequested", o.withdrawal_waived_at as "waivedAt",
            v.original_key as "originalKey", v.format, v.sha256 as "sourceSha", p.handle as "sellerHandle"
     from orders o left join track_versions v on v.id = o.version_id join profiles p on p.user_id = o.seller_id
     where o.id = ${orderId}`);
   return o ?? null;
 }
+
+/** Confirmation sur support durable de la renonciation au droit de rétractation (contenu numérique livré tout de suite). */
+const waiverLine = (o: Order) => o.waivedAt
+  ? [`Le ${dateFr(o.waivedAt)}, tu as demandé à recevoir tes fichiers tout de suite et renoncé à ton droit de rétractation de 14 jours.`]
+  : [];
 
 const safeName = (s: string) => s.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80) || 'beat';
 const dateFr = (d: Date) => d.toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris', day: 'numeric', month: 'long', year: 'numeric' });
@@ -148,6 +153,7 @@ export async function deliverOrder(orderId: string) {
       ] },
       ...(o.vatRate === 0 ? [{ kind: 'text' as const, text: 'TVA non applicable : client établi hors de l’Union européenne.', muted: true }] : []),
       { kind: 'text', text: 'Service fourni par voie électronique : TVA du pays du client (régime du guichet unique OSS).', muted: true },
+      ...waiverLine(o).map((text) => ({ kind: 'text' as const, text, muted: true })),
     ]);
     await putFile(orderId, 'invoice', 'pdf', `Facture ${o.invoiceNo}.pdf`, pdf, 'application/pdf');
   }
@@ -158,7 +164,7 @@ export async function deliverOrder(orderId: string) {
   await sendMail({
     to: o.buyerEmail, tag: 'order', idempotencyKey: `order-buyer-${orderId}`, fromName: `${o.sellerName} via Sonikc`,
     subject: `Ta licence « ${o.licence.name} » pour ${o.trackTitle}`,
-    text: `Merci pour ton achat !\n\nTes fichiers, ta licence et ta facture t’attendent ici :\n${url}\n\nGarde ce lien : il te permet de les retélécharger. Tu les retrouves aussi dans « Mes achats » si tu te connectes à Sonikc avec cette adresse.\n\n— Sonikc`,
+    text: `Merci pour ton achat !\n\nTes fichiers, ta licence et ta facture t’attendent ici :\n${url}\n\nGarde ce lien : il te permet de les retélécharger. Tu les retrouves aussi dans « Mes achats » si tu te connectes à Sonikc avec cette adresse.\n\n${waiverLine(o).join('\n')}${waiverLine(o).length ? '\n\n' : ''}— Sonikc`,
   });
   const [seller] = await asPayments((tx) => tx<{ email: string }[]>`select email from users where id = ${o.sellerId}`);
   if (seller) await sendMail({

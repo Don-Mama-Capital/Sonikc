@@ -109,6 +109,8 @@ describe('Lot 4.3 — paiement (faux Stripe)', () => {
     const m = mails.find((x) => x.to === email && x.tag === 'order');
     const token = /\/commande\/([A-Za-z0-9_-]{44})/.exec(m.text)![1];
     expect(parseOrderToken(token)).toBe(c.orderId);
+    // Renonciation au droit de rétractation confirmée sur support durable (email ; la facture porte la même ligne).
+    expect(m.text).toContain('renoncé à ton droit de rétractation');
     expect(mails.some((x) => x.to === s.email && x.tag === 'sale')).toBe(true);
     // Côté producteur et acheteur (même adresse, compte créé ensuite).
     expect((await listSales(s.id))[0]).toMatchObject({ trackTitle: 'Lueur froide', licenceName: 'Premium', status: 'paid' });

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { asService, withUser } from '@/lib/server/db';
-import { billingOverview, portalUrl, startSubscription, syncSubscription } from '@/lib/server/billing';
+import { billingOverview, normalizeEmail, portalUrl, startSubscription, syncSubscription } from '@/lib/server/billing';
 import { handleWebhook } from '@/lib/server/commerce';
 import { createLink, updateShareSettings } from '@/lib/server/sharing';
 import { resolveLink, sharedFile } from '@/lib/server/viewer';
@@ -131,6 +131,32 @@ describe('Lot 5.2 — abonnements (faux Stripe)', () => {
     if (r.status !== 'ok') return;
     expect(await sharedFile(r.ctx, r.meta, shared.versionId, 'preview')).toMatchObject({ key: `p/${shared.trackId}` });
     expect(await sharedFile(r.ctx, r.meta, shared.versionId, 'original')).toMatchObject({ key: `o/${shared.trackId}` });
+  });
+
+  it('essai gratuit une seule fois par personne : même adresse (variantes Gmail comprises) ou même compte Google', async () => {
+    expect(normalizeEmail(' Jean.Dupont+beats@GoogleMail.com')).toBe('jeandupont@gmail.com');
+    expect(normalizeEmail('lea.m+x@orange.fr')).toBe('lea.m@orange.fr');
+    const tag = Date.now();
+    const a = await makeUser(undefined, 'free');
+    await asService((tx) => tx`update users set email = ${`jean.dupont${tag}+a@gmail.com`}, google_sub = ${`g${tag}`} where id = ${a.id}`);
+    await subscribe(a.id);
+    expect((await subOf(a.id)).status).toBe('trialing');
+    const trialOf = (sid: string) => (fake.state.sessions.get(sid)!.subscription_data as { trial_period_days?: string }).trial_period_days;
+    // Nouveau compte, même personne (adresse écrite autrement) : pas de second essai.
+    const b = await makeUser(undefined, 'free');
+    await asService((tx) => tx`update users set email = ${`jeandupont${tag}@googlemail.com`} where id = ${b.id}`);
+    expect(trialOf(sessionOf((await startSubscription(b.id, { plan: 'pro', period: 'month', country: 'FR' })).url))).toBeUndefined();
+    // Même compte Google, autre adresse : pas d'essai non plus. Personne nouvelle : essai.
+    const c = await makeUser(undefined, 'free');
+    await asService(async (tx) => {
+      await tx`update users set google_sub = null where id = ${a.id}`; // comme après la suppression du compte A
+      await tx`update users set google_sub = ${`g${tag}`} where id = ${c.id}`;
+    });
+    expect(trialOf(sessionOf((await startSubscription(c.id, { plan: 'pro', period: 'month', country: 'FR' })).url))).toBeUndefined();
+    const d = await makeUser(undefined, 'free');
+    expect(trialOf(sessionOf((await startSubscription(d.id, { plan: 'pro', period: 'month', country: 'FR' })).url))).toBe(String(OFFERS.pro.trialDays));
+    // Seules des empreintes sont gardées, jamais l'adresse.
+    expect(JSON.stringify(await asService((tx) => tx`select * from trial_marks`))).not.toContain('dupont');
   });
 
   it('un seul abonnement : refusé si Stripe en a déjà un (même avant le webhook) ; une seule page de paiement ouverte', async () => {

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { asService } from '@/lib/server/db';
+import { asAccount, asService } from '@/lib/server/db';
 import { deleteAccount, exportAccount, removePendingFiles } from '@/lib/server/account';
 import { signInGoogle } from '@/lib/server/google';
 import { createProfile } from '@/lib/server/auth';
@@ -130,6 +130,38 @@ describe('Lot 5.3 — export et suppression du compte', () => {
     await expect(deleteAccount(r.u.id, r.u.handle)).rejects.toThrow('est en cours');
     expect(await exists(r.key)).toBe(true);
     expect(await asService((tx) => tx`select 1 from sessions where user_id = ${r.u.id}`)).toHaveLength(1);
+  });
+
+  it('5. suppression refusée tant que de l’argent de ventes t’est dû sans compte de reversement (montant donné)', async () => {
+    const r = await richUser();
+    const seller = await makeUser();
+    await asService(async (tx) => {
+      const [o] = await tx<{ id: string }[]>`insert into orders (seller_id, track_title, seller_name, licence, exclusive, buyer_email, country, net_cents, vat_rate,
+        vat_cents, gross_cents, plan, commission_pct, commission_cents, status, paid_at, invoice_no, delivered_at)
+        values (${seller.id}, 'Beat', 'Prod', '{}'::jsonb, false, 'client@x.fr', 'FR', 2900, 20, 580, 3480, 'free', 10, 290, 'paid', now(), ${`FT-o${Date.now()}`}, now())
+        returning id`;
+      await tx`insert into order_shares (order_id, user_id, is_owner, pct, amount_cents, status) values (${o.id}, ${r.u.id}, false, 20, 512, 'held')`;
+    });
+    await expect(deleteAccount(r.u.id, r.u.handle)).rejects.toThrow('Il te reste 5,12');
+    expect(await exists(r.key)).toBe(true);
+  });
+
+  it('accès « compte » : il ne voit que les lignes du compte concerné', async () => {
+    const a = await richUser();
+    const b = await richUser();
+    expect(await asAccount(a.u.id, (tx) => tx`select id from tracks where owner_id = ${b.u.id}`)).toEqual([]);
+    expect(await asAccount(a.u.id, (tx) => tx`select id from users where id = ${b.u.id}`)).toEqual([]);
+    expect(await asAccount(a.u.id, (tx) => tx`select 1 from sessions where user_id = ${b.u.id}`)).toEqual([]);
+    expect((await asAccount(a.u.id, (tx) => tx`delete from contacts where owner_id = ${b.u.id}`)).count).toBe(0);
+    expect(await asAccount(a.u.id, (tx) => tx`select id from tracks where owner_id = ${a.u.id}`)).toHaveLength(1);
+    await expect(asAccount(a.u.id, (tx) => tx`update orders set net_cents = 1`)).rejects.toThrow(/permission denied/);
+    await expect(asAccount(a.u.id, (tx) => tx`delete from orders`)).rejects.toThrow(/permission denied/);
+    await expect(asAccount(a.u.id, (tx) => tx`update profiles set plan = 'studio'`)).rejects.toThrow(/permission denied/);
+    // Sans compte : rien d'autre que la file des fichiers à effacer.
+    expect(await asAccount(null, (tx) => tx`select id from tracks`)).toEqual([]);
+    // Plus aucun accès complet dans le code des comptes.
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile('src/lib/server/account.ts', 'utf8')).not.toMatch(/asService/);
   });
 
   it('fichiers : un effacement qui échoue est noté puis repris', async () => {

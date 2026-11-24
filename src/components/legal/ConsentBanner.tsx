@@ -20,8 +20,8 @@ export function ConsentBanner({ initial }: { initial: string | null }) {
     <div role="dialog" aria-label="Cookies" aria-live="polite" data-testid="consent"
       className="fixed inset-x-3 bottom-3 z-50 mx-auto max-w-xl rounded-2xl border border-line bg-panel p-4 shadow-2xl sm:bottom-5">
       <p className="text-sm">
-        Sonikc utilise un seul cookie de mesure : il évite de te compter deux fois quand tu réécoutes un partage et aide le producteur
-        à compter ses auditeurs. Les cookies indispensables (connexion) ne demandent pas ton accord.{' '}
+        Un seul cookie de mesure, gardé sur ton appareil. Si tu acceptes, le producteur sait que c’est toi qui reviens écouter :
+        tes réécoutes ne gonflent pas ses chiffres. Si tu refuses, tu écoutes pareil et rien n’est gardé sur ton appareil.{' '}
         <a href="/cookies" className="underline">En savoir plus</a>
       </p>
       <div className="mt-3 grid grid-cols-2 gap-2">

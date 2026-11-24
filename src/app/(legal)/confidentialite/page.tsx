@@ -14,6 +14,7 @@ export default function PrivacyPage() {
         <li>Les écoutes de tes partages (durée, lien utilisé, nom si l’auditeur est connu) : te montrer qui écoute ; l’auditeur en est informé sur la page.</li>
         <li>Tes contacts et tes envois : t’aider à écrire à des personnes qui l’ont accepté.</li>
         <li>Les ventes, factures et virements : obligations comptables et fiscales (conservés 10 ans).</li>
+        <li>Si tu as eu un essai gratuit : une empreinte irréversible de ton adresse email et de ton compte Google, gardée même après la suppression de ton compte, pour que l’essai reste unique par personne. Elle ne permet pas de retrouver ton adresse.</li>
       </ul>
       <h2>Avec qui nous les partageons</h2>
       <p>Supabase (hébergement, Union européenne), Stripe (paiements), Resend (envoi des emails), Google (si tu te connectes avec Google). <Todo>hébergeur de l’application, transferts hors UE et garanties</Todo></p>

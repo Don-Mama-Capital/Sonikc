@@ -1,14 +1,14 @@
 import { z } from 'zod';
-import { asPayments, asService, withUser, type Tx } from './db';
+import { asAccount, asPayments, withUser, type Tx } from './db';
 import { Invalid, NotFound } from './library';
 import { store } from './storage';
 import { stripe } from './stripe';
 
 /**
  * Lot 5.3 — droits sur les données : export complet en JSON et suppression du compte.
- * L'export passe par l'accès utilisateur (RLS) pour tes propres lignes ; seules les lignes où tu apparais chez
- * d'autres (tes écoutes, tes achats, tes parts) sont lues par l'accès compte, colonnes choisies une à une.
- * La suppression relève du cycle de vie du compte (comme sa création à la connexion) : accès service, une transaction.
+ * L'export passe par l'accès utilisateur (RLS) pour tes propres lignes ; les lignes où tu apparais chez d'autres
+ * (tes écoutes, tes achats, tes parts) sont lues par l'accès « compte » (asAccount), colonnes choisies une à une.
+ * La suppression passe aussi par l'accès « compte » : la base ne lui montre que les lignes du compte supprimé.
  */
 
 // Jamais exportés : secrets, emplacements internes des fichiers, identifiants techniques d'autres personnes.
@@ -71,14 +71,14 @@ const ELSEWHERE: { name: string; q: (tx: Tx, uid: string, email: string) => Prom
 
 /** Toutes tes données, en un seul fichier JSON. */
 export async function exportAccount(userId: string) {
-  const [u] = await asService((tx) => tx<{ email: string; googleSub: string | null; createdAt: Date; deletedAt: Date | null }[]>`
+  const [u] = await asAccount(userId, (tx) => tx<{ email: string; googleSub: string | null; createdAt: Date; deletedAt: Date | null }[]>`
     select email, google_sub as "googleSub", created_at as "createdAt", deleted_at as "deletedAt" from users where id = ${userId}`);
   if (!u || u.deletedAt) throw new NotFound();
   const data: Record<string, unknown[]> = {};
   await withUser(userId, async (tx) => {
     for (const t of OWN) data[t.name] = (await t.q(tx, userId)).map((x) => strip(x.r));
   });
-  await asService(async (tx) => {
+  await asAccount(userId, async (tx) => {
     for (const t of ELSEWHERE) data[t.name] = (await t.q(tx, userId, u.email)).map((x) => strip(x.r));
   });
   return {
@@ -100,14 +100,17 @@ export async function exportAccount(userId: string) {
  */
 export async function deleteAccount(userId: string, confirm: unknown) {
   const [p] = await withUser(userId, (tx) => tx<{ handle: string }[]>`select handle from profiles where user_id = ${userId}`);
-  const [u] = await asService((tx) => tx<{ email: string; deletedAt: Date | null }[]>`select email, deleted_at as "deletedAt" from users where id = ${userId}`);
+  const [u] = await asAccount(userId, (tx) => tx<{ email: string; deletedAt: Date | null }[]>`select email, deleted_at as "deletedAt" from users where id = ${userId}`);
   if (!u || u.deletedAt) throw new NotFound();
   const expected = p?.handle ?? u.email;
   if (z.string().trim().toLowerCase().safeParse(confirm).data !== expected.toLowerCase()) {
     throw new Invalid(`Pour confirmer, tape exactement : ${expected}`);
   }
   const salePending = 'Une de tes ventes est en cours (paiement ou livraison des fichiers) : réessaie dans une heure.';
-  if (await openSales(userId)) throw new Invalid(salePending);
+  await asAccount(userId, async (tx) => {
+    if (await openSales(tx, userId)) throw new Invalid(salePending);
+    await noMoneyOwed(tx, userId);
+  });
 
   // 1. Abonnement : le client Stripe est supprimé (abonnement arrêté tout de suite, plus de données chez Stripe).
   const [sub] = await asPayments((tx) => tx<{ customerId: string }[]>`select customer_id as "customerId" from subscriptions where user_id = ${userId}`);
@@ -118,11 +121,12 @@ export async function deleteAccount(userId: string, confirm: unknown) {
   }
 
   // 2. Base, en une transaction. Les sessions partent en premier : plus aucune requête du compte ne peut aboutir.
-  const outcome = await asService(async (tx) => {
+  const outcome = await asAccount(userId, async (tx) => {
     await tx`delete from sessions where user_id = ${userId}`;
     // Verrou sur tes morceaux : un achat qui commence en même temps attend, puis échoue proprement.
     await tx`select id from tracks where owner_id = ${userId} for update`;
-    if (await openSales(userId, tx)) throw new Invalid(salePending);
+    if (await openSales(tx, userId)) throw new Invalid(salePending);
+    await noMoneyOwed(tx, userId);
     // Fichiers à effacer, relevés dans la transaction (aucun envoi terminé entre-temps n'est oublié).
     const files = await tx<{ k: string | null }[]>`select original_key as k from track_versions where owner_id = ${userId}
       union all select preview_key from track_versions where owner_id = ${userId}
@@ -132,9 +136,9 @@ export async function deleteAccount(userId: string, confirm: unknown) {
 
     // Parts sur les morceaux des autres : retirées (sans effet sur les ventes passées, figées).
     await tx`delete from track_splits where collaborator_id = ${userId}`;
-    // Chez les autres producteurs, ton nom disparaît (statistiques et notifications) ; les écoutes restent, anonymes.
-    await tx`update listen_sessions set listener_name = null where listener_id = ${userId}`;
-    await tx`update notifications set actor = null where actor_id = ${userId}`;
+    // Chez les autres (écoutes, ouvertures, notifications, achats) : ton nom et ton lien au compte disparaissent ;
+    // les lignes restent, anonymes. Fonction de la base limitée au compte courant.
+    await tx`select app.detach_account()`;
     const [{ keep }] = await tx<{ keep: boolean }[]>`select (
       exists (select 1 from orders where seller_id = ${userId}) or exists (select 1 from order_shares where user_id = ${userId})
       or exists (select 1 from stripe_accounts where user_id = ${userId})) as keep`;
@@ -151,19 +155,17 @@ export async function deleteAccount(userId: string, confirm: unknown) {
       and table_name in (select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE')
       and table_name not in ('orders', 'order_shares', 'stripe_accounts')`;
     for (const t of owned) await tx`delete from ${tx(t.table)} where owner_id = ${userId}`;
-    const refs = await tx<{ table: string; column: string }[]>`select table_name as table, column_name as column from information_schema.columns
-      where table_schema = 'public' and column_name in ('listener_id', 'actor_id')
-      and table_name in (select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE')`;
-    for (const r of refs) await tx`update ${tx(r.table)} set ${tx(r.column)} = null where ${tx(r.column)} = ${userId}`;
     await tx`delete from saves where user_id = ${userId}`;
     await tx`delete from subscriptions where user_id = ${userId}`;
-    await tx`update orders set buyer_user_id = null where buyer_user_id = ${userId}`;
     const short = userId.replace(/-/g, '').slice(0, 10);
-    await tx`update profiles set handle = ${`supprime_${short}`}, display_name = 'Compte supprimé', bio = '', links = '{}'::jsonb, plan = 'free'
+    await tx`update profiles set handle = ${`supprime_${short}`}, display_name = 'Compte supprimé', bio = '', links = '{}'::jsonb
       where user_id = ${userId}`;
     await tx`update users set email = ${`supprime+${userId}@sonikc.invalid`}, google_sub = null, deleted_at = now() where id = ${userId}`;
     return { outcome: 'anonymized' as const, keys };
   });
+
+  // L'offre du compte gardé repasse à « gratuite » (seul l'accès paiements écrit l'offre).
+  if (outcome.outcome === 'anonymized') await asPayments((tx) => tx`update profiles set plan = 'free' where user_id = ${userId}`);
 
   // 3. Fichiers (après la base). Ce qui échoue reste noté et sera repris par le worker.
   await removePendingFiles(outcome.keys);
@@ -171,25 +173,35 @@ export async function deleteAccount(userId: string, confirm: unknown) {
 }
 
 /** Une vente du compte (comme vendeur) est-elle en cours de paiement, ou payée mais pas encore livrée ? */
-async function openSales(userId: string, tx?: Tx) {
-  const q = (t: Tx) => t<{ n: number }[]>`select count(*)::int as n from orders where seller_id = ${userId}
+async function openSales(tx: Tx, userId: string) {
+  const [{ n }] = await tx<{ n: number }[]>`select count(*)::int as n from orders where seller_id = ${userId}
     and ((status = 'pending' and created_at > now() - interval '1 hour') or (status = 'paid' and delivered_at is null))`;
-  const [{ n }] = tx ? await q(tx) : await asService(q);
   return n > 0;
+}
+
+/** De l'argent de ventes t'est dû mais ne peut pas t'être versé (pas de compte de reversement actif) : on te le dit d'abord. */
+async function noMoneyOwed(tx: Tx, userId: string) {
+  const [{ cents }] = await tx<{ cents: number }[]>`select coalesce(sum(s.amount_cents), 0)::int as cents from order_shares s
+    where s.user_id = ${userId} and s.status in ('scheduled', 'held', 'disputed', 'transferring')
+      and not exists (select 1 from stripe_accounts a where a.user_id = ${userId} and a.transfers_active)`;
+  if (cents > 0) {
+    const amount = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(cents / 100);
+    throw new Invalid(`Il te reste ${amount} de ventes à recevoir. Active tes reversements (Ventes → « Activer mes reversements ») pour les toucher, puis supprime ton compte.`);
+  }
 }
 
 /** Efface les fichiers notés (ceux donnés, ou les plus anciens en attente) ; rend le nombre effacé. Lancé aussi par le worker. */
 export async function removePendingFiles(keys?: string[]) {
-  const todo = keys ?? (await asService((tx) => tx<{ key: string }[]>`select key from pending_file_removals order by created_at limit 500`)).map((r) => r.key);
+  const todo = keys ?? (await asAccount(null, (tx) => tx<{ key: string }[]>`select key from pending_file_removals order by created_at limit 500`)).map((r) => r.key);
   let removed = 0;
   for (let i = 0; i < todo.length; i += 100) {
     const batch = todo.slice(i, i + 100);
     try {
       await store().remove(batch);
-      await asService((tx) => tx`delete from pending_file_removals where key = any(${batch})`);
+      await asAccount(null, (tx) => tx`delete from pending_file_removals where key = any(${batch})`);
       removed += batch.length;
     } catch {
-      await asService((tx) => tx`update pending_file_removals set attempts = attempts + 1 where key = any(${batch})`);
+      await asAccount(null, (tx) => tx`update pending_file_removals set attempts = attempts + 1 where key = any(${batch})`);
     }
   }
   return removed;

@@ -6,7 +6,9 @@
  * Commission choisie le 20/11/2026 : 10 % sur l'offre gratuite (Sonikc encaisse, facture et gère la TVA),
  * 0 % sur les offres payantes, comme les grandes plateformes de beats. À savoir : à 0 %, les frais Stripe d'un
  * remboursement ou d'un litige sont une perte sèche pour Sonikc (l'abonnement la couvre).
- * ⚠ Prix et limites proposés le 23/11/2026, à valider par le propriétaire du projet.
+ * Prix et limites optimisés le 24/11/2026 (demande du propriétaire) : prix alignés sur le marché des plateformes de beats
+ * (~9 et ~19 par mois), annuel = 10 mois ; stockage plafonné pour rester rentable même à pleine utilisation
+ * (stockage fichiers ~0,02 $/Go/mois chez l'hébergeur : 100 Go ≈ 2 €, 500 Go ≈ 10 € par mois).
  */
 
 export type Limits = {
@@ -52,13 +54,13 @@ export const OFFERS = {
     name: 'Pro',
     tagline: 'Pour envoyer à grande échelle et vendre sans commission.',
     priceMonthCents: 900, priceYearCents: 9000, trialDays: 14, commissionPct: 0,
-    limits: { tracks: null, storageGb: 200, passwordLinks: true, statsDays: null, contacts: 5000, emailsPerMonth: 2000, scheduledSends: true, followUps: false },
+    limits: { tracks: null, storageGb: 100, passwordLinks: true, statsDays: null, contacts: 5000, emailsPerMonth: 2000, scheduledSends: true, followUps: false },
   },
   studio: {
     name: 'Studio',
     tagline: 'Pour les gros catalogues et les relances automatiques.',
     priceMonthCents: 1900, priceYearCents: 19000, trialDays: 14, commissionPct: 0,
-    limits: { tracks: null, storageGb: 1000, passwordLinks: true, statsDays: null, contacts: 20000, emailsPerMonth: 10000, scheduledSends: true, followUps: true },
+    limits: { tracks: null, storageGb: 500, passwordLinks: true, statsDays: null, contacts: 20000, emailsPerMonth: 10000, scheduledSends: true, followUps: true },
   },
 } as const satisfies Record<string, Offer>;
 

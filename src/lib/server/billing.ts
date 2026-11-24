@@ -1,6 +1,7 @@
+import { createHmac } from 'node:crypto';
 import { z } from 'zod';
 import type Stripe from 'stripe';
-import { asPayments, withUser } from './db';
+import { asPayments, withUser, type Tx } from './db';
 import { Invalid } from './library';
 import { env } from './env';
 import { stripe } from './stripe';
@@ -95,7 +96,9 @@ export async function startSubscription(userId: string, raw: unknown) {
       const prev = await stripe().checkout.sessions.retrieve(row.open).catch(() => null);
       if (prev?.status === 'open') await stripe().checkout.sessions.expire(row.open);
     }
-    const trialUsed = row.trialUsed || existing.some((x) => x.trial_start);
+    const marks = await marksOf(tx, userId);
+    const [{ seen }] = await tx<{ seen: boolean }[]>`select exists (select 1 from trial_marks where mark = any(${marks})) as seen`;
+    const trialUsed = row.trialUsed || seen || existing.some((x) => x.trial_start);
     const trialDays = trialUsed ? 0 : OFFERS[input.plan].trialDays;
     const session = await stripe().checkout.sessions.create({
       mode: 'subscription', customer, locale: 'fr', client_reference_id: userId,
@@ -157,6 +160,27 @@ function planOfSubscription(s: Stripe.Subscription): { plan: PaidOffer | null; p
   return { plan: plan === 'pro' || plan === 'studio' ? plan : null, period };
 }
 
+/**
+ * Essai gratuit une fois par personne : empreintes HMAC (irréversibles) de l'email normalisé et de l'identifiant Google.
+ * Gmail : sans points ni « +étiquette » ; autres adresses : sans « +étiquette ».
+ */
+export function normalizeEmail(email: string) {
+  const [rawLocal, rawDomain = ''] = email.trim().toLowerCase().split('@');
+  let local = rawLocal.split('+')[0];
+  let domain = rawDomain;
+  if (domain === 'googlemail.com') domain = 'gmail.com';
+  if (domain === 'gmail.com') local = local.replace(/\./g, '');
+  return `${local}@${domain}`;
+}
+function trialMarks(email: string, googleSub: string | null) {
+  const mark = (v: string) => createHmac('sha256', env().APP_SECRET).update(`sonikc-trial:${v}`).digest('hex');
+  return [mark(`email:${normalizeEmail(email)}`), ...(googleSub ? [mark(`google:${googleSub}`)] : [])];
+}
+async function marksOf(tx: Tx, userId: string) {
+  const [u] = await tx<{ email: string; googleSub: string | null }[]>`select email, google_sub as "googleSub" from users where id = ${userId}`;
+  return u ? trialMarks(u.email, u.googleSub) : [];
+}
+
 const PLAN_RANK: Record<string, number> = { pro: 1, studio: 2 };
 
 /**
@@ -173,6 +197,10 @@ export async function syncCustomer(customer: string): Promise<OfferId | null> {
       .sort((a, b) => Number(b.entitled) - Number(a.entitled) || (PLAN_RANK[b.plan ?? ''] ?? 0) - (PLAN_RANK[a.plan ?? ''] ?? 0) || b.x.created - a.x.created);
     const best = scored[0];
     const trialUsed = all.some((x) => x.trial_start);
+    if (trialUsed) {
+      const marks = await marksOf(tx, row.userId);
+      if (marks.length) await tx`insert into trial_marks ${tx(marks.map((mark) => ({ mark })))} on conflict (mark) do nothing`;
+    }
     if (!best) {
       await tx`update subscriptions set trial_used = trial_used or ${trialUsed}, updated_at = now() where user_id = ${row.userId}`;
       await tx`update profiles set plan = ${FREE} where user_id = ${row.userId}`;
