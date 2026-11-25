@@ -158,6 +158,22 @@ describe('Lot 2.1 — accès', () => {
     expect((await resolveLink(s.token, null, good.value)).status).toBe('password');
   });
 
+  it('5 bis. morceau partagé seul avec mot de passe : une fois ouvert, l’auditeur le voit et l’écoute (recette du 25/11)', async () => {
+    const owner = await makeUser();
+    const t = await readyTrack(owner.id, 'Solo');
+    await updateShareSettings(owner.id, 'track', t.id, { visibility: 'public', password: 'motdepasse-solo' });
+    const link = await createLink(owner.id, 'track', t.id, 'Label');
+    const token = tokenOf(link.url);
+    const good = await unlock(token, 'motdepasse-solo', 'v-solo');
+    if (!good.ok) throw new Error('attendu ok');
+    const r = await resolveLink(token, null, good.value);
+    if (r.status !== 'ok') throw new Error('attendu ok');
+    const view = await loadShared(token, r);
+    expect(view!.tracks).toHaveLength(1);
+    expect(view!.tracks[0].hiddenForListeners).toBe(false);
+    expect(await sharedFile(r.ctx, r.meta, t.versionId, 'preview')).not.toBeNull();
+  });
+
   it('6. adresse audio expirée ou falsifiée refusée ; ancienne version jamais servie à un tiers', async () => {
     const s = await setup('public');
     const linkId = parseLinkToken(s.token)!;

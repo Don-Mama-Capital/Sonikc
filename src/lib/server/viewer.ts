@@ -115,6 +115,9 @@ export async function loadShared(token: string, r: Extract<Resolution, { status:
         select ${sharedTrackCols(tx)} from tracks t join track_versions v on v.id = t.current_version_id
         where t.id = ${meta.targetId} and v.status = 'ready'`;
       if (!rows.length) return null;
+      // Partage d'un seul morceau : c'est la cible du lien, pas un morceau d'un projet. Son mot de passe est celui
+      // du lien (déjà ouvert si on arrive ici) : il n'est jamais masqué à l'auditeur.
+      rows = rows.map((t) => ({ ...t, hiddenForListeners: false }));
       title = rows[0].title; allowDownload = rows[0].allowDownload;
     }
     const tracks: SharedTrack[] = rows.map((t) => ({

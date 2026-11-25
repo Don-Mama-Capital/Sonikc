@@ -68,7 +68,7 @@ export function BillingView() {
         {sub?.status && (
           <p className="text-sm" data-testid="sub-status">
             {STATUS[sub.status] ?? sub.status}
-            {sub.status === 'trialing' && sub.trialEnd && ` jusqu’au ${date(sub.trialEnd)}`}
+            {sub.status === 'trialing' && sub.trialEnd && ` jusqu’au ${date(sub.trialEnd)}${sub.cancelAtPeriodEnd ? ' · résilié : pas de renouvellement' : ''}`}
             {sub.status === 'active' && sub.currentPeriodEnd && (sub.cancelAtPeriodEnd ? ` · se termine le ${date(sub.currentPeriodEnd)}` : ` · renouvelé le ${date(sub.currentPeriodEnd)}`)}
           </p>
         )}

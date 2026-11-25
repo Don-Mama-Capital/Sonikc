@@ -45,7 +45,7 @@ export function AppHeader({ handle, notation }: { handle: string; notation: 'aut
           )}
         </div>
         <button className="rounded-lg border border-line px-2 py-1 font-mono text-xs text-mute hover:text-text" data-testid="notation"
-          title={`Tonalités : ${TITLE[notation]} (cliquer pour changer)`} aria-label={`Notation des tonalités : ${TITLE[notation]}`}
+          title={`Tonalités : ${TITLE[notation]} (cliquer pour changer)`} aria-label={`Tonalités ${LABEL[notation]} : ${TITLE[notation]}`}
           onClick={async () => {
             await fetch('/api/profile', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ keyNotation: NEXT[notation] }) });
             router.refresh();

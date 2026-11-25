@@ -1,0 +1,94 @@
+name: Recette
+# Recette utilisateurs (docs/recette.md).
+# - Niveau A (simulation complète) : à chaque PR qui touche à la recette, et à la main.
+# - Niveau B (environnement réel : Supabase dev + vrai Stripe en mode test) : à la main seulement
+#   (onglet Actions → Recette → Run workflow → niveau « reel »). Exige les secrets SUPABASE_DB_URL, SUPABASE_URL,
+#   SUPABASE_SECRET_KEY et STRIPE_TEST_SECRET_KEY ; sans eux, le niveau B s'arrête avec un avertissement.
+on:
+  workflow_dispatch:
+    inputs:
+      niveau:
+        description: 'local = simulation complète ; reel = Supabase dev + vrai Stripe (mode test)'
+        type: choice
+        options: [local, reel]
+        default: local
+  pull_request:
+    paths:
+      - 'tests/recette/**'
+      - 'scripts/recette-server.ts'
+      - 'playwright.recette.config.ts'
+      - '.github/workflows/recette.yml'
+concurrency:
+  group: recette-${{ github.ref }}-${{ inputs.niveau || 'local' }}
+  cancel-in-progress: false
+jobs:
+  recette:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CHROME_PATH: /usr/bin/google-chrome
+      NIVEAU: ${{ inputs.niveau || 'local' }}
+      HAS_SECRETS: ${{ secrets.SUPABASE_DB_URL != '' && secrets.SUPABASE_URL != '' && secrets.SUPABASE_SECRET_KEY != '' && secrets.STRIPE_TEST_SECRET_KEY != '' }}
+    steps:
+      - name: Secrets du niveau réel
+        id: check
+        run: |
+          if [ "$NIVEAU" = "reel" ] && [ "$HAS_SECRETS" != "true" ]; then
+            echo "::warning title=Recette réelle non lancée::Il manque un des secrets SUPABASE_DB_URL, SUPABASE_URL, SUPABASE_SECRET_KEY, STRIPE_TEST_SECRET_KEY."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.skip != '1'
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.skip != '1'
+        with:
+          node-version: 22
+          cache: npm
+      - name: ffmpeg
+        if: steps.check.outputs.skip != '1'
+        timeout-minutes: 10
+        run: |
+          if curl -fsSL --retry 3 https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar -xJ -C "$RUNNER_TEMP"; then
+            echo "$RUNNER_TEMP/ffmpeg-master-latest-linux64-gpl/bin" >> "$GITHUB_PATH"
+          else
+            sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg
+          fi
+      - name: CLI Stripe (niveau réel)
+        if: steps.check.outputs.skip != '1' && env.NIVEAU == 'reel'
+        run: |
+          curl -fsSL https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public | gpg --dearmor | sudo tee /usr/share/keyrings/stripe.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/stripe.gpg] https://packages.stripe.dev/stripe-cli-debian-local stable main" | sudo tee /etc/apt/sources.list.d/stripe.list
+          sudo apt-get update -q && sudo apt-get install -y -q stripe
+          stripe version
+      - if: steps.check.outputs.skip != '1'
+        run: npm ci
+      - name: Beats de référence
+        if: steps.check.outputs.skip != '1'
+        run: npm run fixtures
+      - name: Build
+        if: steps.check.outputs.skip != '1'
+        run: npm run build
+        env:
+          APP_SECRET: ci-only-secret-not-used-anywhere-else-000000
+          DATABASE_URL: postgres://unused@127.0.0.1:1/unused
+          ALLOW_LOCAL_DRIVERS: '1'
+      - name: Recette
+        if: steps.check.outputs.skip != '1'
+        run: npx playwright test -c playwright.recette.config.ts
+        env:
+          RECETTE_ENV: ${{ env.NIVEAU }}
+          SUPABASE_DB_URL: ${{ env.NIVEAU == 'reel' && secrets.SUPABASE_DB_URL || '' }}
+          SUPABASE_URL: ${{ env.NIVEAU == 'reel' && secrets.SUPABASE_URL || '' }}
+          SUPABASE_SECRET_KEY: ${{ env.NIVEAU == 'reel' && secrets.SUPABASE_SECRET_KEY || '' }}
+          STRIPE_SECRET_KEY: ${{ env.NIVEAU == 'reel' && secrets.STRIPE_TEST_SECRET_KEY || '' }}
+      - name: Nettoyage vérifié (niveau réel, critère B5)
+        if: always() && steps.check.outputs.skip != '1' && env.NIVEAU == 'reel'
+        run: npx tsx scripts/recette-leftovers.ts
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.check.outputs.skip != '1'
+        with:
+          name: recette-${{ env.NIVEAU }}
+          path: test-results/recette
+          retention-days: 14
